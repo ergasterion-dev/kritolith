@@ -29,29 +29,34 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
 	}
-	if err != nil || len(pos) != 0 {
+	if err != nil {
+		return 2
+	}
+	if len(pos) != 0 {
+		fs.Usage()
 		return 2
 	}
 
 	cases, err := eval.LoadCorpus(*corpus)
 	if err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	dir := *dataDir
-	if dir == "" {
+	if dir != "" {
+		if dir, err = filepath.Abs(dir); err != nil {
+			return fail(stderr, err)
+		}
+	} else {
 		tmp, err := os.MkdirTemp("", "kritolith-eval-")
 		if err != nil {
-			fmt.Fprintf(stderr, "kritolith: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 		defer os.RemoveAll(tmp)
 		dir = tmp
 	}
 	st, err := store.Open(ctx, dir)
 	if err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	defer st.Close()
 	p := pipeline.New(st)
@@ -72,10 +77,11 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return v.Outcome, nil
 	})
 	if err := sb.Write(stdout); err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	if sb.Failed() {
+		fmt.Fprintf(stderr, "kritolith: eval failed: %d real reports marked GROUNDING_FAILED, %d errors\n",
+			sb.RealGroundingFailures(), sb.Errors())
 		return 1
 	}
 	return 0
