@@ -36,3 +36,6 @@ go.work.sum
 
 # Private planning doc (copy kept in ../kritolith-personal-docs-never-to-push)
 Claude_Web_Handoff.md
+
+# Build output
+/bin/
