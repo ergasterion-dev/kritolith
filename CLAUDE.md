@@ -3,7 +3,7 @@
 Kritolith verifies incoming security vulnerability reports before a maintainer reads them. It checks every concrete claim in a report against the actual code, reproduces the PoC in a locked-down sandbox, flags duplicates, and produces a signed evidence verdict. Humans make every decision; Kritolith only gathers evidence.
 
 - Repo: `github.com/ergasterion-dev/kritolith`
-- Module path: `kritolith.dev/kritolith` (vanity import, never the GitHub path)
+- Module path: `github.com/ergasterion-dev/kritolith`
 - License: Apache-2.0
 - Status: pre-alpha. Do not run on real embargoed reports until sandbox hardening lands.
 
@@ -78,7 +78,6 @@ internal/
   eval/                   corpus runner and scoreboard
 testdata/corpus/{real,fabricated}/
 docs/{architecture.md,threat-model.md}
-site/                     vanity import page for kritolith.dev
 Makefile
 kritolith.example.json
 ```

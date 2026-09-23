@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, check the [v1 scope](https://github.com/ergasterion-dev/kritolith#scope). Other languages, HackerOne/Bugcrowd,
+        a web UI, and LLM exploitability scoring are deliberately out of scope for v1.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What maintainer pain does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Kritolith behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security problem?** Stop here and [report it privately](https://github.com/ergasterion-dev/kritolith/security/advisories/new).
+        Never paste content from a real, embargoed vulnerability report into a public issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, config (with secrets removed), and a public or fabricated report that triggers it.
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options: [intake, extract, ground, dedupe, sandbox, verdict, llm, cli / config, not sure]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kritolith version or commit
+      placeholder: "output of `kritolith version`, or a commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Go version, gVisor (`runsc --version`), LLM provider if any.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant `kritolith` output. Remove any report content before pasting.
+      render: shell

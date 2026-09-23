@@ -1,0 +1,37 @@
+name: Wrong verdict
+description: Kritolith gave a verdict that doesn't match reality
+labels: ["verdict-accuracy"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only use **public advisories** or **reports you made up yourself**. Never paste an embargoed report here.
+        A real report marked `GROUNDING_FAILED` is the most serious bug Kritolith can have. Please flag it below.
+  - type: dropdown
+    id: got
+    attributes:
+      label: Verdict Kritolith gave
+      options: [REPRODUCED, REPRODUCED_FIXED_AT_HEAD, NOT_REPRODUCED, GROUNDING_FAILED, LIKELY_DUPLICATE, NEEDS_INFO, INCONCLUSIVE]
+    validations:
+      required: true
+  - type: dropdown
+    id: expected
+    attributes:
+      label: Verdict you expected
+      options: [REPRODUCED, REPRODUCED_FIXED_AT_HEAD, NOT_REPRODUCED, GROUNDING_FAILED, LIKELY_DUPLICATE, NEEDS_INFO, INCONCLUSIVE]
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Public advisory or fabricated report
+      placeholder: "GHSA-xxxx-xxxx-xxxx, or 'fabricated (attached below)'"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Verdict output and why it's wrong
+      render: shell
+    validations:
+      required: true
