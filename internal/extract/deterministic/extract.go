@@ -52,8 +52,7 @@ func Extract(body string) []report.Claim {
 	claims = append(claims, fileClaims(body)...)
 	claims = append(claims, lineClaims(body)...)
 	claims = append(claims, funcClaims(body)...)
-	claims = append(claims, versionClaims(body)...)
-	claims = append(claims, shaClaims(body)...)
+	claims = append(claims, versionAndSHAClaims(body)...)
 	claims = append(claims, vulnClassClaims(body)...)
 	return dedupe(claims)
 }
@@ -90,10 +89,23 @@ func matchClaims(re *regexp.Regexp, body string, kind report.ClaimKind) []report
 }
 
 func fileClaims(body string) []report.Claim { return matchClaims(fileRe, body, report.ClaimFile) }
-func versionClaims(body string) []report.Claim {
-	return matchClaims(versionRe, body, report.ClaimVersion)
+
+// versionAndSHAClaims matches version tags and commit SHAs, both under the
+// shared ClaimVersion kind. Capped once per kind to enforce maxPerKind.
+func versionAndSHAClaims(body string) []report.Claim {
+	var out []report.Claim
+	add := func(matches []string) {
+		for _, m := range matches {
+			if len(out) >= maxPerKind {
+				return
+			}
+			out = append(out, newClaim(report.ClaimVersion, m))
+		}
+	}
+	add(versionRe.FindAllString(body, maxPerKind))
+	add(shaRe.FindAllString(body, maxPerKind))
+	return out
 }
-func shaClaims(body string) []report.Claim { return matchClaims(shaRe, body, report.ClaimVersion) }
 
 func lineClaims(body string) []report.Claim {
 	matches := lineRe.FindAllStringSubmatch(body, maxPerKind)

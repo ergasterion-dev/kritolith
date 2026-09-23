@@ -108,6 +108,31 @@ func TestExtractCapsPerKind(t *testing.T) {
 	}
 }
 
+func TestExtractCapsVersionPerKind(t *testing.T) {
+	// Verify that ClaimVersion is capped per kind, not per regex.
+	// versionRe and shaRe both produce ClaimVersion; they should share
+	// a single cap of maxPerKind total, not each get their own.
+	var b strings.Builder
+	// Add 60 distinct version tags
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, "v1.%d.0 ", i)
+	}
+	// Add 60 distinct SHA-like tokens (7+ hex chars)
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, "%07x ", i)
+	}
+	claims := Extract(b.String())
+	count := 0
+	for _, c := range claims {
+		if c.Kind == report.ClaimVersion {
+			count++
+		}
+	}
+	if count > maxPerKind {
+		t.Errorf("version claims not capped: got %d, want <= %d", count, maxPerKind)
+	}
+}
+
 func TestExtractLargeInputCompletesQuickly(t *testing.T) {
 	// Go's regexp package is RE2-based (no backtracking), so this can't
 	// exhibit catastrophic ReDoS blowup by construction. This test pins
