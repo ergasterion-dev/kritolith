@@ -196,11 +196,11 @@ func loadPoC(dir string) ([]report.Artifact, error) {
 		}
 		switch {
 		case d.Type()&fs.ModeSymlink != 0:
-			return fmt.Errorf("%s is a symlink; symlinks are rejected", rel)
+			return fmt.Errorf("%q is a symlink; symlinks are rejected", rel)
 		case d.IsDir():
 			return nil
 		case !d.Type().IsRegular():
-			return fmt.Errorf("%s is not a regular file", rel)
+			return fmt.Errorf("%q is not a regular file", rel)
 		}
 		if len(arts) == MaxPoCFiles {
 			return fmt.Errorf("too many files (limit %d)", MaxPoCFiles)
@@ -208,14 +208,14 @@ func loadPoC(dir string) ([]report.Artifact, error) {
 		f, err := r.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 		if err != nil {
 			if errors.Is(err, syscall.ELOOP) {
-				return fmt.Errorf("%s is a symlink; symlinks are rejected", rel)
+				return fmt.Errorf("%q is a symlink; symlinks are rejected", rel)
 			}
-			return fmt.Errorf("%s: %w", rel, err)
+			return fmt.Errorf("%q: %w", rel, err)
 		}
 		defer f.Close()
 		data, err := readOpened(f, rel, MaxPoCBytes-total)
 		if err != nil {
-			return fmt.Errorf("%s: %w (total PoC limit is %d bytes)", rel, err, MaxPoCBytes)
+			return fmt.Errorf("%q: %w (total PoC limit is %d bytes)", rel, err, MaxPoCBytes)
 		}
 		total += int64(len(data))
 		arts = append(arts, report.Artifact{Name: filepath.ToSlash(rel), Content: data})
