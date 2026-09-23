@@ -26,15 +26,23 @@ func ValidateRepo(s string) error {
 // ValidateRef checks that s is a safe commit SHA, tag or branch name.
 // It is deliberately stricter than git: refs later reach git's command
 // line, so anything that could parse as an option or revision
-// expression (leading '-', "..", '@', '~', ':') is rejected.
+// expression (leading '-', "..", '@', '~', ':') is rejected. Every
+// path component is checked too, not just the whole string: a
+// component starting with '.' or ending in ".lock" is rejected
+// wherever it appears, since these are git-internal path shapes a
+// reporter-controlled ref should never be able to reach.
 func ValidateRef(s string) error {
 	if !refRe.MatchString(s) ||
 		strings.Contains(s, "..") ||
 		strings.Contains(s, "//") ||
 		strings.HasSuffix(s, "/") ||
-		strings.HasSuffix(s, ".") ||
-		strings.HasSuffix(s, ".lock") {
+		strings.HasSuffix(s, ".") {
 		return fmt.Errorf("report: invalid ref %q", s)
+	}
+	for _, part := range strings.Split(s, "/") {
+		if strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return fmt.Errorf("report: invalid ref %q", s)
+		}
 	}
 	return nil
 }

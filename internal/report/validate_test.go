@@ -19,7 +19,10 @@ func TestValidateRepo(t *testing.T) {
 
 func TestValidateRef(t *testing.T) {
 	good := []string{"v1.2.3", "e1fcd82abba34df74614020343be8eb1fe85f0d9", "release-1.2", "refs/tags/v1", "a3f9c1"}
-	bad := []string{"", "-x", "--upload-pack=touch /tmp/pwned", "a..b", "a/", "x.lock", "a.", "a b", "a~1", "HEAD@{1}", "a:b", "a//b"}
+	bad := []string{
+		"", "-x", "--upload-pack=touch /tmp/pwned", "a..b", "a/", "x.lock", "a.", "a b", "a~1", "HEAD@{1}", "a:b", "a//b",
+		"refs/.hidden/x", "a/.git/config", "x/y.lock/z", ".", "refs/heads/.x",
+	}
 	for _, s := range good {
 		if err := ValidateRef(s); err != nil {
 			t.Errorf("ValidateRef(%q) = %v, want nil", s, err)
