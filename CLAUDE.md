@@ -72,6 +72,7 @@ internal/
   dedupe/                 fingerprints, embeddings, OSV mirror
   sandbox/                runsc driver, phases, limits, result capture
   verdict/                compose, render (markdown), sign, verify
+  pipeline/               runs a report through the stages, stores results
   llm/                    provider.go + {openaicompat,anthropic,gemini,router}/
   store/                  SQLite schema, migrations, queries
   jobs/                   in-process queue and workers
