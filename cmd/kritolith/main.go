@@ -38,6 +38,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "check":
+		return runCheck(ctx, args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "kritolith %s\n", version)
 		return 0
