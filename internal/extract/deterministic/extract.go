@@ -60,13 +60,24 @@ var vulnKeywords = []struct{ phrase, class string }{
 // Extract parses body for concrete, checkable claims. It never panics
 // and never returns more than maxPerKind claims of any one kind.
 func Extract(body string) []report.Claim {
+	prose := stripFencedCodeBlocks(body)
 	var claims []report.Claim
-	claims = append(claims, fileClaims(body)...)
-	claims = append(claims, lineClaims(body)...)
-	claims = append(claims, funcClaims(body)...)
-	claims = append(claims, versionAndSHAClaims(body)...)
-	claims = append(claims, vulnClassClaims(body)...)
+	claims = append(claims, fileClaims(prose)...)
+	claims = append(claims, lineClaims(prose)...)
+	claims = append(claims, funcClaims(prose)...)
+	claims = append(claims, versionAndSHAClaims(prose)...)
+	claims = append(claims, vulnClassClaims(prose)...)
 	return dedupe(claims)
+}
+
+// stripFencedCodeBlocks removes ```...``` fenced code blocks from body,
+// replacing each with a single space, so claim extraction only scans
+// prose text. Code blocks are handled separately via PoCCandidates:
+// scanning their content as if it were prose produces systematic false
+// positives — a struct field access or a stdlib call reads exactly
+// like a "pkg.Func" claim to funcClaims, but isn't one.
+func stripFencedCodeBlocks(body string) string {
+	return fenceRe.ReplaceAllString(body, " ")
 }
 
 // PoCCandidates returns the fenced code blocks in body, capped at

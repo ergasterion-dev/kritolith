@@ -165,6 +165,75 @@ func TestExtractNoPanic(t *testing.T) {
 	}
 }
 
+// TestExtractIgnoresFencedCodeBlockNoise pins the fix for a bug where
+// funcClaims scanned fenced code block content as if it were prose: a
+// struct field access or method call on a local variable reads exactly
+// like a "pkg.Func" claim shape, but isn't a declared symbol anywhere,
+// so grounding correctly reports it "not found" and wrongly escalates
+// the whole report to GROUNDING_FAILED. Only prose claims should survive.
+func TestExtractIgnoresFencedCodeBlockNoise(t *testing.T) {
+	body := "The bug is in pkg.RealFunc, see below.\n" +
+		"```go\n" +
+		"resp := doThing()\n" +
+		"if resp.Errors != nil {\n" +
+		"    localVar.someField()\n" +
+		"}\n" +
+		"```\n"
+	claims := Extract(body)
+	if !hasClaim(claims, report.ClaimFunction, "pkg.RealFunc") {
+		t.Errorf("missing prose claim: %+v", claims)
+	}
+	if hasClaim(claims, report.ClaimFunction, "resp.Errors") {
+		t.Errorf("code block noise wrongly extracted as function claim: %+v", claims)
+	}
+	if hasClaim(claims, report.ClaimFunction, "localVar.someField") {
+		t.Errorf("code block noise wrongly extracted as function claim: %+v", claims)
+	}
+}
+
+// TestExtractIgnoresGo20220300StyleNoise directly pins the real-world
+// bug found via the go-2022-0300 corpus case: a PoC embedded as a
+// fenced ```go block contains a package-level var reference
+// (starwars.Schema), a method call on a local (schema.Exec), a stdlib
+// call (context.Background), and a struct field access (resp.Errors) —
+// none of which are legitimate claims about the vulnerability, but all
+// of which match funcClaims' "pkg.Func"/"Type.Method" shape.
+func TestExtractIgnoresGo20220300StyleNoise(t *testing.T) {
+	body := "The circular fragment causes unbounded recursion during validation.\n\n" +
+		"```go\n" +
+		"package graphql_test\n\n" +
+		"import (\n" +
+		"\t\"context\"\n" +
+		"\t\"testing\"\n\n" +
+		"\tgraphql \"github.com/graph-gophers/graphql-go\"\n" +
+		"\t\"github.com/graph-gophers/graphql-go/example/starwars\"\n" +
+		")\n\n" +
+		"func TestPoCCircularFragmentMaxDepth(t *testing.T) {\n" +
+		"\tschema := graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, graphql.MaxDepth(2))\n" +
+		"\tquery := `...`\n" +
+		"\tresp := schema.Exec(context.Background(), query, \"\", nil)\n" +
+		"\tif len(resp.Errors) == 0 {\n" +
+		"\t\tt.Fatal(\"expected validation errors for a fragment cycle, got none\")\n" +
+		"\t}\n" +
+		"}\n" +
+		"```\n"
+	claims := Extract(body)
+	bogus := []string{
+		"starwars.Schema",
+		"starwars.Resolver",
+		"schema.Exec",
+		"context.Background",
+		"resp.Errors",
+		"graphql.MustParseSchema",
+		"graphql.MaxDepth",
+	}
+	for _, b := range bogus {
+		if hasClaim(claims, report.ClaimFunction, b) {
+			t.Errorf("claim from fenced code block leaked into prose claims: %q; all claims: %+v", b, claims)
+		}
+	}
+}
+
 func TestPoCCandidates(t *testing.T) {
 	body := "Here:\n```go\npackage main\nfunc main() {}\n```\nDone."
 	blocks := PoCCandidates(body)
