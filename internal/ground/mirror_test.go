@@ -178,6 +178,58 @@ func TestFileExistsAndReadFile(t *testing.T) {
 	}
 }
 
+func TestReadFileSkipsOversizedBlobBeforeReading(t *testing.T) {
+	origin, commit1 := newTestOrigin(t)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := m.EnsureAndResolve(ctx, commit1, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a file that's larger than a tiny, test-only cap. It doesn't
+	// need to be anywhere near the real 10MB default — the point is to
+	// prove the size gate fires, not to exercise a multi-megabyte
+	// fixture.
+	big := strings.Repeat("x", 1000)
+	if err := os.WriteFile(filepath.Join(origin, "big.go"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = origin
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("add", "big.go")
+	run("commit", "-q", "-m", "add big file")
+	commit2 := run("rev-parse", "HEAD")
+	if _, resolved, err := m.EnsureAndResolve(ctx, commit2, nil); err != nil || !resolved {
+		t.Fatalf("resolve commit2 failed: %v %v", resolved, err)
+	}
+
+	old := maxReadBytes
+	maxReadBytes = 100 // well under len(big); forces the size gate to trip
+	defer func() { maxReadBytes = old }()
+
+	// Confirm the file genuinely exists in the tree, so a false result
+	// from ReadFile below is attributable to the size gate — not to a
+	// missing-path false, which is a different code path.
+	if ok, err := m.FileExists(ctx, commit2, "big.go"); err != nil || !ok {
+		t.Fatalf("FileExists(big.go) = %v, %v, want true, nil", ok, err)
+	}
+
+	content, ok, err := m.ReadFile(ctx, commit2, "big.go")
+	if err != nil || ok || content != nil {
+		t.Fatalf("ReadFile(big.go) over cap = %q, %v, %v, want nil, false, nil", content, ok, err)
+	}
+}
+
 func TestFileExistsRejectsTraversal(t *testing.T) {
 	origin, commit := newTestOrigin(t)
 	m, err := OpenMirror(t.TempDir(), "owner/name", origin)

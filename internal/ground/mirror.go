@@ -7,14 +7,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
-const (
-	maxReadBytes = 10 << 20 // bound the work: a single file read is capped, not unlimited
-)
+// maxReadBytes bounds the work, not just the result: ReadFile checks a
+// blob's size (via a cheap `git cat-file -s`) before ever running
+// `git show` on it, so an oversized blob is skipped, not read into
+// memory and then truncated. It is a var, not a const, so tests can
+// override it with a tiny threshold instead of committing a
+// multi-megabyte fixture.
+var maxReadBytes int64 = 10 << 20
 
 // Mirror is a bare git mirror for one repo, rooted at a fixed path
 // under a data dir. Every operation shells out to git; nothing here
@@ -139,18 +144,40 @@ func (m *Mirror) FileExists(ctx context.Context, commit, path string) (bool, err
 	return err == nil, nil
 }
 
-// ReadFile returns the blob content at commit:path, capped at
-// maxReadBytes. ok is false if the path doesn't exist — not an error.
+// blobSize returns the byte size of the blob at commit:path via
+// `git cat-file -s`, which reports only the size — it never streams
+// the blob's content, so it's safe to call on an arbitrarily large
+// object before deciding whether to read it.
+func (m *Mirror) blobSize(ctx context.Context, commit, path string) (int64, error) {
+	out, err := m.runGit(ctx, m.path, "cat-file", "-s", commit+":"+path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+}
+
+// ReadFile returns the blob content at commit:path. ok is false if
+// the path doesn't exist, or if the blob is larger than
+// maxReadBytes — not an error either way. The size is checked with a
+// cheap `git cat-file -s` before `git show` ever runs, so an
+// oversized blob is skipped, not read into memory and truncated
+// after the fact: `git show`'s output is buffered in full by runGit,
+// so bounding it after the read would already have paid the memory
+// cost the cap is meant to avoid.
 func (m *Mirror) ReadFile(ctx context.Context, commit, path string) ([]byte, bool, error) {
 	if err := ValidateClaimPath(path); err != nil {
+		return nil, false, nil
+	}
+	size, err := m.blobSize(ctx, commit, path)
+	if err != nil {
+		return nil, false, nil
+	}
+	if size > maxReadBytes {
 		return nil, false, nil
 	}
 	out, err := m.runGit(ctx, m.path, "show", commit+":"+path)
 	if err != nil {
 		return nil, false, nil
-	}
-	if len(out) > maxReadBytes {
-		out = out[:maxReadBytes]
 	}
 	return []byte(out), true, nil
 }
