@@ -17,7 +17,7 @@ fmt:
 	gofmt -w .
 
 fmt-check:
-	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	@out=$$(gofmt -l $$(git ls-files '*.go' | grep -v '^testdata/')); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 eval:
 	$(GO) run ./cmd/kritolith eval --corpus testdata/corpus
