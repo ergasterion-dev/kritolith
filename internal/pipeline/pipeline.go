@@ -28,11 +28,11 @@ func New(s Store) *Pipeline { return &Pipeline{store: s} }
 // Run stores the report, composes its verdict and stores that too.
 func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, error) {
 	if err := p.store.SaveReport(ctx, r); err != nil {
-		return report.Verdict{}, fmt.Errorf("pipeline: %w", err)
+		return report.Verdict{}, fmt.Errorf("pipeline: save report: %w", err)
 	}
-	v := verdict.Compose(r)
+	v := verdict.Compose(r, verdict.StageResults{})
 	if err := p.store.SaveVerdict(ctx, v); err != nil {
-		return report.Verdict{}, fmt.Errorf("pipeline: %w", err)
+		return report.Verdict{}, fmt.Errorf("pipeline: save verdict: %w", err)
 	}
 	return v, nil
 }

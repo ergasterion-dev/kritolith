@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
@@ -11,8 +12,9 @@ import (
 )
 
 type fakeStore struct {
-	calls     []string
-	reportErr error
+	calls      []string
+	reportErr  error
+	verdictErr error
 }
 
 func (f *fakeStore) SaveReport(_ context.Context, r report.Report) error {
@@ -22,7 +24,7 @@ func (f *fakeStore) SaveReport(_ context.Context, r report.Report) error {
 
 func (f *fakeStore) SaveVerdict(_ context.Context, v report.Verdict) error {
 	f.calls = append(f.calls, "verdict:"+string(v.Outcome))
-	return nil
+	return f.verdictErr
 }
 
 func TestRunOrderAndOutcome(t *testing.T) {
@@ -41,11 +43,26 @@ func TestRunOrderAndOutcome(t *testing.T) {
 
 func TestRunStoreError(t *testing.T) {
 	fs := &fakeStore{reportErr: errors.New("disk full")}
-	if _, err := New(fs).Run(context.Background(), report.Report{ID: "R1"}); err == nil {
+	_, err := New(fs).Run(context.Background(), report.Report{ID: "R1"})
+	if err == nil {
 		t.Fatal("want error")
+	}
+	if !strings.Contains(err.Error(), "save report:") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "save report:")
 	}
 	if len(fs.calls) != 1 {
 		t.Errorf("verdict saved after report failed: %v", fs.calls)
+	}
+}
+
+func TestRunVerdictSaveError(t *testing.T) {
+	fs := &fakeStore{verdictErr: errors.New("disk full")}
+	_, err := New(fs).Run(context.Background(), report.Report{ID: "R1"})
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !strings.Contains(err.Error(), "save verdict:") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "save verdict:")
 	}
 }
 

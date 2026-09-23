@@ -8,12 +8,22 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
+// StageResults carries the outputs of pipeline stages that have run so
+// far. It grows one field per milestone (a Grounding field in Week 3,
+// Dedupe in Week 4, Repro in Week 5/6); each addition is a
+// non-breaking change as long as callers use named-field struct
+// literals, which is why this signature changes once, here, rather
+// than being widened piecemeal every week.
+type StageResults struct {
+	Claims []report.Claim
+}
+
 // Compose builds the verdict from the stage results available so far.
 // Until grounding, dedupe and sandbox exist, the only decidable case is
 // a missing ref (NEEDS_INFO); everything else is INCONCLUSIVE, never a
 // rejection.
-func Compose(r report.Report) report.Verdict {
-	v := report.Verdict{ReportID: r.ID}
+func Compose(r report.Report, res StageResults) report.Verdict {
+	v := report.Verdict{ReportID: r.ID, Claims: res.Claims}
 	if r.ClaimedRef == "" {
 		v.Outcome = report.OutcomeNeedsInfo
 		v.Notes = []string{"no commit or tag given; can't check claims against the code"}

@@ -18,7 +18,7 @@ func TestCompose(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			v := Compose(report.Report{ID: "R1", ClaimedRef: tt.ref})
+			v := Compose(report.Report{ID: "R1", ClaimedRef: tt.ref}, StageResults{})
 			if v.ReportID != "R1" || v.Outcome != tt.want || len(v.Notes) == 0 {
 				t.Fatalf("Compose = %+v, want %s with notes", v, tt.want)
 			}
@@ -26,9 +26,17 @@ func TestCompose(t *testing.T) {
 	}
 }
 
+func TestComposeCarriesClaims(t *testing.T) {
+	claims := []report.Claim{{Kind: report.ClaimFile, Value: "a.go", Source: "deterministic"}}
+	v := Compose(report.Report{ID: "R1", ClaimedRef: "v1"}, StageResults{Claims: claims})
+	if len(v.Claims) != 1 || v.Claims[0].Value != "a.go" {
+		t.Fatalf("Claims = %+v", v.Claims)
+	}
+}
+
 func TestRender(t *testing.T) {
 	r := report.Report{ID: "R1", Repo: "golang/net", ClaimedRef: "e1fcd82abba34df74614020343be8eb1fe85f0d9"}
-	out := Render(r, Compose(r))
+	out := Render(r, Compose(r, StageResults{}))
 	if !strings.HasPrefix(out, "Kritolith: INCONCLUSIVE at e1fcd82abba3\n") {
 		t.Errorf("header wrong:\n%s", out)
 	}
@@ -37,11 +45,11 @@ func TestRender(t *testing.T) {
 	}
 
 	tag := report.Report{ID: "R2", Repo: "a/b", ClaimedRef: "v1.2.3"}
-	if out := Render(tag, Compose(tag)); !strings.HasPrefix(out, "Kritolith: INCONCLUSIVE at v1.2.3\n") {
+	if out := Render(tag, Compose(tag, StageResults{})); !strings.HasPrefix(out, "Kritolith: INCONCLUSIVE at v1.2.3\n") {
 		t.Errorf("tag ref header wrong:\n%s", out)
 	}
 	none := report.Report{ID: "R3", Repo: "a/b"}
-	if out := Render(none, Compose(none)); !strings.HasPrefix(out, "Kritolith: NEEDS_INFO\n") {
+	if out := Render(none, Compose(none, StageResults{})); !strings.HasPrefix(out, "Kritolith: NEEDS_INFO\n") {
 		t.Errorf("no-ref header wrong:\n%s", out)
 	}
 }
