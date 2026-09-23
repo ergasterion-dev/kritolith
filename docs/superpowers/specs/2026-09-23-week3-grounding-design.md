@@ -140,6 +140,27 @@ Per-kind behavior:
   This is honest about what was actually checked (syntax-level
   declaration, not full type-checked resolution) — it never claims
   "package" identity it didn't verify.
+
+  **Amendment (Task 8b, after the first real-corpus run).** "No
+  matching `FuncDecl`" is not by itself proof a claim is false: 13/20
+  real reports hit `GROUNDING_FAILED` on claims like
+  `protowire.ConsumeVarint` (a dependency's function the repo calls),
+  `sync.Pool`, `URL.Scheme` (a field), `ChunkSize` (a struct field),
+  `MaxBitLen` (a const) and `paddingLength` (a local). So a function
+  claim that matches no declaration is `Verified: no` only when its
+  absence is provable, and otherwise `unknown` with the reason in
+  `Evidence`. Provable means the scan covered the whole tree, the name
+  appears nowhere in the repo's source as an identifier (scanned with
+  `go/scanner`, so unparseable files still count), and the claim is
+  one of: `(*T).M` where `T` is a repo type with a closed method set
+  (no embedding, not an alias, not defined from another named type);
+  `pkg.name` with an unexported `name`, `pkg` a package declared in
+  the repo, and no out-of-module import bound to `pkg`; or a bare
+  unexported `name`. Qualified exported names and bare exported names
+  are never disproved. A bare name also matches a method declaration.
+  A `file` claim missing at its exact path is `unknown`, not `no`, if
+  some file in the tree has that path as a suffix (`frame.go` for
+  `http2/frame.go`).
 - **`line`** (soft): checked when the claim's file exists and the
   parsed file's line count covers it; if a same-report `function`
   claim's declaration position is known, also checks the line falls

@@ -65,7 +65,11 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 
 // hardClaimFailed reports whether any hard claim (file or function)
 // was checked and found missing. A line claim (soft) is never
-// consulted here, regardless of its own Verified value.
+// consulted here, regardless of its own Verified value. This relies on
+// grounding's contract that Verified: no means absence was proven, not
+// merely that no declaration matched: a claim grounding can't disprove
+// (a dependency's function, a field, an exported name that may live in
+// another package) comes back unknown and never reaches this check.
 func hardClaimFailed(claims []report.Claim) bool {
 	for _, c := range claims {
 		if (c.Kind == report.ClaimFile || c.Kind == report.ClaimFunction) && c.Verified == report.TriNo {

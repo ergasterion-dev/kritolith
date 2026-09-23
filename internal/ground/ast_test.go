@@ -11,7 +11,7 @@ func (t *Type) Method() {}
 
 func (v Value) OtherMethod() {}
 `)
-	decls := parseDeclarations("p.go", src)
+	decls := parseDeclarations("p.go", src).decls
 	if len(decls) != 3 {
 		t.Fatalf("decls = %+v, want 3", decls)
 	}
@@ -29,7 +29,7 @@ func (v Value) OtherMethod() {}
 
 func TestParseDeclarationsPositions(t *testing.T) {
 	src := []byte("package p\n\nfunc Foo() {\n\treturn\n}\n")
-	decls := parseDeclarations("p.go", src)
+	decls := parseDeclarations("p.go", src).decls
 	if len(decls) != 1 {
 		t.Fatalf("decls = %+v, want 1", decls)
 	}
@@ -39,7 +39,7 @@ func TestParseDeclarationsPositions(t *testing.T) {
 }
 
 func TestParseDeclarationsInvalidSyntaxIsNotFatal(t *testing.T) {
-	decls := parseDeclarations("bad.go", []byte("this is not go code {{{"))
+	decls := parseDeclarations("bad.go", []byte("this is not go code {{{")).decls
 	if decls != nil {
 		t.Errorf("decls = %+v, want nil for unparseable input", decls)
 	}
@@ -54,7 +54,7 @@ func (t *Type[T]) Method() {}
 
 func (t Type[T, U]) Other() {}
 `)
-	decls := parseDeclarations("p.go", src)
+	decls := parseDeclarations("p.go", src).decls
 	if len(decls) != 2 {
 		t.Fatalf("decls = %+v, want 2", decls)
 	}
@@ -142,5 +142,114 @@ func TestLevenshtein(t *testing.T) {
 		if got := levenshtein(tt.a, tt.b); got != tt.want {
 			t.Errorf("levenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+func TestFindDeclarationBareNameMatchesMethod(t *testing.T) {
+	// go-2024-3279 cites "`AddMut`", a method on LegacyDec, by its bare
+	// name.
+	decls := []declaration{{name: "AddMut", receiver: "LegacyDec", file: "math/dec.go", line: 275}}
+	if d := findDeclaration(decls, "AddMut"); d == nil {
+		t.Error("findDeclaration(AddMut) = nil, want the method on LegacyDec")
+	}
+	// A plain function of the same name still wins over a method.
+	decls = append(decls, declaration{name: "AddMut", file: "plain.go", line: 1})
+	if d := findDeclaration(decls, "AddMut"); d == nil || d.receiver != "" {
+		t.Errorf("findDeclaration(AddMut) = %+v, want the plain function", d)
+	}
+}
+
+func TestParseDeclarationsPackageImportsAndTypes(t *testing.T) {
+	src := []byte(`package widgets
+
+import (
+	"strings"
+	yaml "gopkg.in/yaml.v3"
+	"example.com/mod/v2"
+	_ "embed"
+)
+
+type Closed struct{ a int }
+type Embeds struct{ Closed }
+type Alias = strings.Builder
+type Level int
+type Named Closed
+type Iface interface{ Close() error }
+type IfaceEmbeds interface{ Iface }
+type Fn func()
+`)
+	fs := parseDeclarations("w.go", src)
+	if fs.pkg != "widgets" {
+		t.Errorf("pkg = %q, want widgets", fs.pkg)
+	}
+	wantImports := map[string]string{"strings": "strings", "yaml": "gopkg.in/yaml.v3", "mod": "example.com/mod/v2", "_": "embed"}
+	if len(fs.imports) != len(wantImports) {
+		t.Fatalf("imports = %+v, want %d", fs.imports, len(wantImports))
+	}
+	for _, im := range fs.imports {
+		if wantImports[im.name] != im.path {
+			t.Errorf("import %q -> %q, want %q", im.name, im.path, wantImports[im.name])
+		}
+	}
+	wantOpen := map[string]bool{
+		"Closed": false, "Embeds": true, "Alias": true, "Level": false,
+		"Named": true, "Iface": false, "IfaceEmbeds": true, "Fn": false,
+	}
+	if len(fs.types) != len(wantOpen) {
+		t.Fatalf("types = %+v, want %d", fs.types, len(wantOpen))
+	}
+	for _, td := range fs.types {
+		if want, ok := wantOpen[td.name]; !ok || td.methodSetOpen != want {
+			t.Errorf("type %s methodSetOpen = %v, want %v", td.name, td.methodSetOpen, want)
+		}
+	}
+}
+
+func TestImportName(t *testing.T) {
+	tests := map[string]string{
+		"strings": "strings",
+		"google.golang.org/protobuf/encoding/protowire": "protowire",
+		"github.com/golang-jwt/jwt/v5":                  "jwt",
+		"gopkg.in/yaml.v3":                              "yaml",
+		"github.com/foo/go-bar":                         "go_bar",
+	}
+	for path, want := range tests {
+		if got := importName(path); got != want {
+			t.Errorf("importName(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestScanIdentifiers(t *testing.T) {
+	src := []byte(`package p
+
+// onlyInComment is mentioned here but never used.
+var s = "onlyInString"
+
+func f() {
+	paddingLength := 3
+	_ = protowire.ConsumeVarint
+	_ = types.MessageLimit{ChunkSize: paddingLength}
+}
+`)
+	got := map[string]struct{}{}
+	scanIdentifiers(src, got)
+	for _, want := range []string{"paddingLength", "protowire", "ConsumeVarint", "ChunkSize", "MessageLimit", "f"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("identifier %q not collected", want)
+		}
+	}
+	for _, not := range []string{"onlyInComment", "onlyInString"} {
+		if _, ok := got[not]; ok {
+			t.Errorf("identifier %q collected from a comment or string, want skipped", not)
+		}
+	}
+}
+
+func TestScanIdentifiersToleratesUnparseableInput(t *testing.T) {
+	got := map[string]struct{}{}
+	scanIdentifiers([]byte("func broken( {{{ declaredInBrokenFile @@@ \x00"), got)
+	if _, ok := got["declaredInBrokenFile"]; !ok {
+		t.Errorf("identifiers = %v, want declaredInBrokenFile collected despite syntax errors", got)
 	}
 }
