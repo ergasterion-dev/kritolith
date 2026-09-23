@@ -80,7 +80,7 @@ func extractFrom(ctx context.Context, p llm.Provider, body string) ([]report.Cla
 		return nil, fmt.Errorf("llmextract: %s: %w", p.Name(), err)
 	}
 	var raw rawResponse
-	dec := json.NewDecoder(strings.NewReader(stripControlBytes(extractJSONObject(resp.Text))))
+	dec := json.NewDecoder(strings.NewReader(extractJSONObject(resp.Text)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("llmextract: %s: invalid schema: %w", p.Name(), err)
@@ -121,24 +121,6 @@ func extractJSONObject(s string) string {
 		return s
 	}
 	return s[start : end+1]
-}
-
-// stripControlBytes drops raw ASCII control bytes (U+0000-U+001F) from
-// LLM-sourced JSON text before decoding. RFC 8259 forbids these
-// unescaped inside a JSON string, so a response that contains one
-// (whether from a broken model or a report body echoed back
-// verbatim) would otherwise fail json.Decode entirely and cause an
-// otherwise-valid response to be dropped. They're never legitimate in
-// well-formed JSON output, so removing them is always safe.
-// Bidirectional-control and other non-ASCII sanitization happens
-// after decode, via report.Printable.
-func stripControlBytes(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 {
-			return -1
-		}
-		return r
-	}, s)
 }
 
 func truncate(s string, n int) string {

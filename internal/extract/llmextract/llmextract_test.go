@@ -92,7 +92,7 @@ func TestExtractEmptyChainReturnsNil(t *testing.T) {
 }
 
 func TestExtractSanitizesValue(t *testing.T) {
-	p := &fakeProvider{name: "m1", text: `{"claims": [{"kind": "file", "value": "a.go` + "\u001b[2J" + `", "evidence": "e"}, {"kind": "function", "value": "evil` + "‮" + `func", "evidence": "note` + "‮" + `"}]}`}
+	p := &fakeProvider{name: "m1", text: `{"claims": [{"kind": "file", "value": "a.go\u001b[2J", "evidence": "e"}, {"kind": "function", "value": "evil‮func", "evidence": "note‮"}]}`}
 	claims := Extract(context.Background(), fakeChain{[]llm.Provider{p}}, report.Report{ID: "R1"})
 	if len(claims) != 2 {
 		t.Fatalf("claims = %+v", claims)
