@@ -72,3 +72,64 @@ func TestRenderSanitizes(t *testing.T) {
 		t.Fatalf("claim line wrong: %q", out)
 	}
 }
+
+func TestComposeRefNotResolved(t *testing.T) {
+	v := Compose(report.Report{ID: "R1", ClaimedRef: "deadbeef"}, StageResults{GroundingRan: true, RefResolved: false})
+	if v.Outcome != report.OutcomeNeedsInfo {
+		t.Errorf("Outcome = %s, want NEEDS_INFO", v.Outcome)
+	}
+}
+
+func TestComposeGroundingFailedOnHardClaim(t *testing.T) {
+	tests := []report.ClaimKind{report.ClaimFile, report.ClaimFunction}
+	for _, kind := range tests {
+		claims := []report.Claim{{Kind: kind, Value: "x", Verified: report.TriNo}}
+		v := Compose(report.Report{ID: "R1", ClaimedRef: "v1"}, StageResults{Claims: claims, GroundingRan: true, RefResolved: true})
+		if v.Outcome != report.OutcomeGroundingFailed {
+			t.Errorf("kind %s: Outcome = %s, want GROUNDING_FAILED", kind, v.Outcome)
+		}
+	}
+}
+
+func TestComposeLineOnlyFailureNeverGroundingFails(t *testing.T) {
+	claims := []report.Claim{{Kind: report.ClaimLine, Value: "a.go:9999", Verified: report.TriNo}}
+	v := Compose(report.Report{ID: "R1", ClaimedRef: "v1"}, StageResults{Claims: claims, GroundingRan: true, RefResolved: true})
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE (a line claim alone must never cause GROUNDING_FAILED)", v.Outcome)
+	}
+}
+
+func TestComposeGroundingSucceededNoHardFailure(t *testing.T) {
+	claims := []report.Claim{{Kind: report.ClaimFile, Value: "a.go", Verified: report.TriYes}}
+	v := Compose(report.Report{ID: "R1", ClaimedRef: "v1"}, StageResults{Claims: claims, GroundingRan: true, RefResolved: true})
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE", v.Outcome)
+	}
+}
+
+func TestComposeNoGrounderConfiguredIsUnaffected(t *testing.T) {
+	// GroundingRan defaults to false (the zero value) when no Grounder
+	// was wired into the pipeline at all — this must behave exactly
+	// like Week 2 (no regression for callers that don't configure one).
+	v := Compose(report.Report{ID: "R1", ClaimedRef: "v1"}, StageResults{})
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE", v.Outcome)
+	}
+}
+
+func TestComposeStillAppendsLLMUnavailableNote(t *testing.T) {
+	claims := []report.Claim{{Kind: report.ClaimFile, Value: "x", Verified: report.TriNo}}
+	v := Compose(report.Report{ID: "R1", ClaimedRef: "v1"}, StageResults{Claims: claims, GroundingRan: true, RefResolved: true, LLMUnavailable: true})
+	if v.Outcome != report.OutcomeGroundingFailed {
+		t.Errorf("Outcome = %s, want GROUNDING_FAILED", v.Outcome)
+	}
+	found := false
+	for _, n := range v.Notes {
+		if strings.Contains(n, "LLM extraction unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Notes = %v, want the LLM-unavailable note to still be appended alongside a GROUNDING_FAILED outcome", v.Notes)
+	}
+}
