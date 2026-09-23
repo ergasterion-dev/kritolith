@@ -24,7 +24,7 @@ func TestLoadExample(t *testing.T) {
 	if c.DataDir != "/var/lib/kritolith" || len(c.Projects) != 1 || c.Projects[0].Repo != "owner/name" {
 		t.Fatalf("unexpected config: %+v", c)
 	}
-	if len(c.LLM) == 0 || len(c.Sandbox) == 0 {
+	if len(c.LLM.Providers) == 0 || len(c.LLM.Tasks) == 0 || len(c.Sandbox) == 0 {
 		t.Fatal("llm/sandbox sections were dropped")
 	}
 }

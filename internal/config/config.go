@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
@@ -25,11 +26,11 @@ type Project struct {
 
 // Config is the parsed kritolith.json.
 type Config struct {
-	DataDir  string    `json:"data_dir"`
-	Projects []Project `json:"projects"`
-	// LLM and Sandbox are parsed by later milestones. They are kept raw
-	// so documented config files stay valid today.
-	LLM     json.RawMessage `json:"llm,omitempty"`
+	DataDir  string     `json:"data_dir"`
+	Projects []Project  `json:"projects"`
+	LLM      llm.Config `json:"llm,omitempty"`
+	// Sandbox is parsed by a later milestone. Kept raw so documented
+	// config files stay valid today.
 	Sandbox json.RawMessage `json:"sandbox,omitempty"`
 }
 
@@ -76,6 +77,9 @@ func (c Config) Validate() error {
 				return fmt.Errorf("projects[%d].notify: %q: %w", i, addr, err)
 			}
 		}
+	}
+	if err := c.LLM.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
