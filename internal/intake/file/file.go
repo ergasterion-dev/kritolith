@@ -106,9 +106,10 @@ func title(body string) string {
 	return ""
 }
 
-// readRegular reads at most limit bytes from a regular file. It opens
-// non-blocking so a FIFO can't hang intake, and with O_NOFOLLOW unless
-// followSymlinks is set.
+// readRegular reads at most limit bytes from a regular file at path. It
+// opens non-blocking so a FIFO can't hang intake, and with O_NOFOLLOW
+// unless followSymlinks is set. Used for the report path, which is
+// operator-supplied and may itself be a symlink.
 func readRegular(path string, limit int64, followSymlinks bool) ([]byte, error) {
 	flags := os.O_RDONLY | syscall.O_NONBLOCK
 	if !followSymlinks {
@@ -122,22 +123,30 @@ func readRegular(path string, limit int64, followSymlinks bool) ([]byte, error) 
 		return nil, err
 	}
 	defer f.Close()
+	return readOpened(f, path, limit)
+}
+
+// readOpened reads at most limit bytes from an already-open file,
+// rejecting anything that isn't a regular file (catches a FIFO/device/
+// socket swapped in after the open) and anything over limit. name is
+// used only for error messages.
+func readOpened(f *os.File, name string, limit int64) ([]byte, error) {
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
+		return nil, fmt.Errorf("%s is not a regular file", name)
 	}
 	if st.Size() > limit {
-		return nil, fmt.Errorf("%s is %d bytes; limit is %d", path, st.Size(), limit)
+		return nil, fmt.Errorf("%s is %d bytes; limit is %d", name, st.Size(), limit)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%s grew past the %d byte limit while reading", path, limit)
+		return nil, fmt.Errorf("%s grew past the %d byte limit while reading", name, limit)
 	}
 	return data, nil
 }
@@ -145,6 +154,15 @@ func readRegular(path string, limit int64, followSymlinks bool) ([]byte, error) 
 // loadPoC reads every regular file under dir. Symlinks, devices, FIFOs
 // and sockets anywhere in the tree are rejected rather than skipped, so
 // a hostile PoC can't point Kritolith at files outside the directory.
+//
+// Files are opened through an os.Root scoped to dir rather than by
+// concatenated path. filepath.WalkDir's own lstat only proves what a
+// path component was at walk time; if an already-walked directory is
+// swapped for a symlink to outside the tree before the file under it is
+// opened, a plain os.OpenFile on the concatenated path would follow it
+// out. os.Root re-resolves every path component beneath the root's file
+// descriptor at open time and refuses any symlink that would leave the
+// root, closing that race by construction.
 func loadPoC(dir string) ([]report.Artifact, error) {
 	root, err := filepath.EvalSymlinks(dir) // the root itself comes from the operator
 	if err != nil {
@@ -157,6 +175,12 @@ func loadPoC(dir string) ([]report.Artifact, error) {
 	if !st.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", dir)
 	}
+
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
 
 	var (
 		arts  []report.Artifact
@@ -181,7 +205,15 @@ func loadPoC(dir string) ([]report.Artifact, error) {
 		if len(arts) == MaxPoCFiles {
 			return fmt.Errorf("too many files (limit %d)", MaxPoCFiles)
 		}
-		data, err := readRegular(path, MaxPoCBytes-total, false)
+		f, err := r.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+		if err != nil {
+			if errors.Is(err, syscall.ELOOP) {
+				return fmt.Errorf("%s is a symlink; symlinks are rejected", rel)
+			}
+			return fmt.Errorf("%s: %w", rel, err)
+		}
+		defer f.Close()
+		data, err := readOpened(f, rel, MaxPoCBytes-total)
 		if err != nil {
 			return fmt.Errorf("%s: %w (total PoC limit is %d bytes)", rel, err, MaxPoCBytes)
 		}

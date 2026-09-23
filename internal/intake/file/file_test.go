@@ -171,6 +171,34 @@ func TestLoadPoCRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestLoadPoCRejectsSymlinkedDir(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "report.md")
+	writeFile(t, p, "report")
+
+	elsewhere := t.TempDir()
+	writeFile(t, filepath.Join(elsewhere, "secret.txt"), "PRIVATE KEY")
+
+	poc := filepath.Join(dir, "poc")
+	if err := os.MkdirAll(poc, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(poc, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	o := opts(t, p)
+	o.PoCDir = poc
+	r, err := Load(o)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want symlink rejection", err)
+	}
+	for _, a := range r.PoC {
+		if strings.Contains(string(a.Content), "PRIVATE KEY") {
+			t.Fatalf("secret leaked into PoC artifacts: %+v", a)
+		}
+	}
+}
+
 func TestLoadPoCLimits(t *testing.T) {
 	t.Run("too many files", func(t *testing.T) {
 		dir := t.TempDir()
