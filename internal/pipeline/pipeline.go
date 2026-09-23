@@ -1,6 +1,6 @@
 // Package pipeline runs a report through Kritolith's stages and stores
-// the result. Later milestones add ground, dedupe and sandbox between
-// extraction and composing the verdict.
+// the result. Later milestones add dedupe and sandbox between
+// grounding and composing the verdict.
 package pipeline
 
 import (
@@ -9,6 +9,7 @@ import (
 
 	"github.com/ergasterion-dev/kritolith/internal/extract/deterministic"
 	"github.com/ergasterion-dev/kritolith/internal/extract/llmextract"
+	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/verdict"
 )
@@ -23,9 +24,11 @@ type Store interface {
 type Pipeline struct {
 	store    Store
 	llmChain llmextract.Chain // nil when no LLM is configured
+	grounder ground.Grounder  // nil when no Grounder is configured
 }
 
-// New returns a Pipeline that persists to s, with no LLM configured.
+// New returns a Pipeline that persists to s, with no LLM or Grounder
+// configured.
 func New(s Store) *Pipeline { return &Pipeline{store: s} }
 
 // WithLLM returns p configured to also try LLM extraction through
@@ -36,10 +39,22 @@ func (p *Pipeline) WithLLM(chain llmextract.Chain) *Pipeline {
 	return p
 }
 
-// Run stores the report, extracts claims, composes the verdict and
-// stores that too. Deterministic extraction always runs; LLM
-// extraction runs only when WithLLM configured a chain, and its claims
-// never override a deterministic claim with the same kind and value.
+// WithGround returns p configured to also ground claims through g. A
+// nil grounder (New's default) skips the grounding stage entirely:
+// Run behaves exactly as it did before Week 3, for any caller that
+// doesn't wire one in.
+func (p *Pipeline) WithGround(g ground.Grounder) *Pipeline {
+	p.grounder = g
+	return p
+}
+
+// Run stores the report, extracts claims, grounds them, composes the
+// verdict and stores that too. Deterministic extraction always runs;
+// LLM extraction runs only when WithLLM configured a chain, and its
+// claims never override a deterministic claim with the same kind and
+// value. Grounding runs only when WithGround configured a grounder; it
+// never fails Run — a grounding failure of any kind degrades to a
+// "ref not resolved" verdict, never a pipeline error.
 func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, error) {
 	if err := p.store.SaveReport(ctx, r); err != nil {
 		return report.Verdict{}, fmt.Errorf("pipeline: save report: %w", err)
@@ -51,7 +66,15 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 		llmUnavailable = len(llmClaims) == 0
 		claims = mergeClaims(claims, llmClaims)
 	}
-	v := verdict.Compose(r, verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable})
+	res := verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable}
+	if p.grounder != nil {
+		grounded, resolved, resolvedRef := p.grounder.Ground(ctx, r, claims)
+		res.Claims = grounded
+		res.GroundingRan = true
+		res.RefResolved = resolved
+		res.ResolvedRef = resolvedRef
+	}
+	v := verdict.Compose(r, res)
 	if err := p.store.SaveVerdict(ctx, v); err != nil {
 		return report.Verdict{}, fmt.Errorf("pipeline: save verdict: %w", err)
 	}

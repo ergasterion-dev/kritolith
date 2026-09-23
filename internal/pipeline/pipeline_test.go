@@ -199,3 +199,54 @@ func TestRunSucceedsWithLLMUnavailableNote(t *testing.T) {
 		t.Errorf("notes = %v, want a note that LLM extraction was unavailable", v.Notes)
 	}
 }
+
+type fakeGrounder struct {
+	claims      []report.Claim // if non-nil, returned as-is instead of the input claims
+	resolved    bool
+	resolvedRef string
+}
+
+func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ([]report.Claim, bool, string) {
+	out := claims
+	if g.claims != nil {
+		out = g.claims
+	}
+	return out, g.resolved, g.resolvedRef
+}
+
+func TestRunGroundingFailedOutcome(t *testing.T) {
+	fs := &fakeStore{}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go for the bug."}
+	failed := []report.Claim{{Kind: report.ClaimFile, Value: "a.go", Verified: report.TriNo, Evidence: "not found"}}
+	v, err := New(fs).WithGround(fakeGrounder{claims: failed, resolved: true, resolvedRef: "abc123"}).Run(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Outcome != report.OutcomeGroundingFailed {
+		t.Errorf("Outcome = %s, want GROUNDING_FAILED", v.Outcome)
+	}
+}
+
+func TestRunGroundingRefNotResolved(t *testing.T) {
+	fs := &fakeStore{}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go."}
+	v, err := New(fs).WithGround(fakeGrounder{resolved: false}).Run(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Outcome != report.OutcomeNeedsInfo {
+		t.Errorf("Outcome = %s, want NEEDS_INFO", v.Outcome)
+	}
+}
+
+func TestRunWithNoGrounderConfiguredIsUnchanged(t *testing.T) {
+	fs := &fakeStore{}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go."}
+	v, err := New(fs).Run(context.Background(), r) // no WithGround call
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE (no grounder configured must behave exactly like before Week 3)", v.Outcome)
+	}
+}
