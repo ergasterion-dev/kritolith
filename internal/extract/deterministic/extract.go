@@ -15,14 +15,26 @@ import (
 const maxPerKind = 50
 
 var (
-	fileRe    = regexp.MustCompile(`\b[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.go\b`)
-	lineRe    = regexp.MustCompile(`\b([A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.go):(\d{1,6})\b`)
-	methodRe  = regexp.MustCompile(`\(\*?[A-Za-z_][A-Za-z0-9_]{1,60}\)\.[A-Za-z_][A-Za-z0-9_]{1,60}`)
-	dotRe     = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]{1,60}\.[A-Za-z_][A-Za-z0-9_]{1,60}\b`)
-	versionRe = regexp.MustCompile(`\bv[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?\b`)
-	shaRe     = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
-	fenceRe   = regexp.MustCompile("(?s)```[A-Za-z0-9_+-]*\\n(.*?)```")
+	fileRe          = regexp.MustCompile(`\b[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.go\b`)
+	lineRe          = regexp.MustCompile(`\b([A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.go):(\d{1,6})\b`)
+	methodRe        = regexp.MustCompile(`\(\*?[A-Za-z_][A-Za-z0-9_]{1,60}\)\.[A-Za-z_][A-Za-z0-9_]{1,60}`)
+	dotRe           = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]{1,60}\.[A-Za-z_][A-Za-z0-9_]{1,60}\b`)
+	backtickIdentRe = regexp.MustCompile("`([A-Za-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*)`")
+	versionRe       = regexp.MustCompile(`\bv[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?\b`)
+	shaRe           = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+	fenceRe         = regexp.MustCompile("(?s)```[A-Za-z0-9_+-]*\\n(.*?)```")
 )
+
+// domainLikeSuffixes are segments after the last dot in a dotRe match
+// that mean the match is an import path or URL host, not a genuine
+// pkg.Func / Type.Method claim: common TLD-like suffixes and Go module
+// version suffixes (e.g. "yaml.v3"), on top of the original "go"
+// (a Go filename like "decode.go").
+var domainLikeSuffixes = map[string]bool{
+	"go": true, "com": true, "org": true, "net": true, "io": true,
+	"dev": true, "sh": true, "app": true, "co": true, "in": true,
+	"v2": true, "v3": true,
+}
 
 // vulnKeywords maps a report phrase to a vuln class. Order matters: the
 // first matching phrase for a class wins, which keeps output
@@ -117,10 +129,14 @@ func lineClaims(body string) []report.Claim {
 }
 
 // funcClaims matches "pkg.Func", "Type.Method" and "(*Type).Method"
-// shapes. Matches whose segment after the dot is literally "go"
-// (case-insensitive) are dropped: dotRe alone can't tell "decode.go"
-// (a filename) from a genuine two-segment identifier, so this is the
-// one collision worth excluding explicitly for a Go-only project.
+// shapes, plus bare backtick-wrapped CamelCase identifiers (e.g.
+// “ `lexInlineTableDeep` “) that name a symbol without a surrounding
+// "pkg." or "Type." prefix. Matches whose segment after the dot is a
+// domain-like suffix (a Go filename, a common TLD, or a module version
+// suffix like "yaml.v3") are dropped: dotRe alone can't tell
+// "github.com" or "decode.go" from a genuine two-segment identifier,
+// so this is the collision worth excluding explicitly for a Go-only
+// project.
 func funcClaims(body string) []report.Claim {
 	var out []report.Claim
 	seen := make(map[string]bool)
@@ -132,7 +148,7 @@ func funcClaims(body string) []report.Claim {
 			if seen[m] {
 				continue
 			}
-			if idx := strings.LastIndexByte(m, '.'); idx >= 0 && strings.EqualFold(m[idx+1:], "go") {
+			if idx := strings.LastIndexByte(m, '.'); idx >= 0 && domainLikeSuffixes[strings.ToLower(m[idx+1:])] {
 				continue
 			}
 			seen[m] = true
@@ -141,6 +157,17 @@ func funcClaims(body string) []report.Claim {
 	}
 	add(methodRe.FindAllString(body, maxPerKind))
 	add(dotRe.FindAllString(body, maxPerKind))
+	for _, m := range backtickIdentRe.FindAllStringSubmatch(body, maxPerKind) {
+		if len(out) >= maxPerKind {
+			break
+		}
+		ident := m[1]
+		if seen[ident] {
+			continue
+		}
+		seen[ident] = true
+		out = append(out, newClaim(report.ClaimFunction, ident))
+	}
 	return out
 }
 

@@ -99,3 +99,27 @@ func TestIsLocalAlwaysFalse(t *testing.T) {
 		t.Error("want IsLocal always false for the anthropic adapter")
 	}
 }
+
+// TestCompleteDoesNotFollowRedirect proves a 307 from the configured
+// endpoint is not followed, so the request (with its x-api-key header
+// and report-derived body) is never resent to a redirect target.
+func TestCompleteDoesNotFollowRedirect(t *testing.T) {
+	var evilHit bool
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHit = true
+	}))
+	defer evil.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	a := New(Options{Name: "test", BaseURL: srv.URL, Model: "m"})
+	if _, err := a.Complete(context.Background(), llm.CompleteRequest{}); err == nil {
+		t.Fatal("want an error: a 307 has no usable response body")
+	}
+	if evilHit {
+		t.Fatal("redirect target was hit; client followed the redirect")
+	}
+}

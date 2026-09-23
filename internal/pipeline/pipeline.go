@@ -45,10 +45,13 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 		return report.Verdict{}, fmt.Errorf("pipeline: save report: %w", err)
 	}
 	claims := deterministic.Extract(r.Body)
+	var llmUnavailable bool
 	if p.llmChain != nil {
-		claims = mergeClaims(claims, llmextract.Extract(ctx, p.llmChain, r))
+		llmClaims := llmextract.Extract(ctx, p.llmChain, r)
+		llmUnavailable = len(llmClaims) == 0
+		claims = mergeClaims(claims, llmClaims)
 	}
-	v := verdict.Compose(r, verdict.StageResults{Claims: claims})
+	v := verdict.Compose(r, verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable})
 	if err := p.store.SaveVerdict(ctx, v); err != nil {
 		return report.Verdict{}, fmt.Errorf("pipeline: save verdict: %w", err)
 	}

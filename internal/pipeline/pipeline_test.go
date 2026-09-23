@@ -155,4 +155,47 @@ func TestRunWithNoLLMConfigured(t *testing.T) {
 	if len(v.Claims) == 0 {
 		t.Error("want deterministic claims even with no LLM configured")
 	}
+	for _, n := range v.Notes {
+		if strings.Contains(n, "LLM extraction unavailable") {
+			t.Errorf("notes = %v, want no LLM-unavailable note when no LLM was configured at all", v.Notes)
+		}
+	}
+}
+
+type failingProvider struct{ name string }
+
+func (f failingProvider) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return llm.CompleteResponse{}, errors.New("boom")
+}
+func (f failingProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return nil, nil
+}
+func (f failingProvider) Name() string  { return f.name }
+func (f failingProvider) IsLocal() bool { return true }
+
+// TestRunSucceedsWithLLMUnavailableNote proves that when WithLLM is
+// configured but every provider in the chain fails, Run still
+// succeeds (never wrongly rejects a report over an LLM outage) and the
+// verdict carries a note that LLM extraction was unavailable, so the
+// degraded state is visible instead of silent.
+func TestRunSucceedsWithLLMUnavailableNote(t *testing.T) {
+	fs := &fakeStore{}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go."}
+	chain := stubChain{[]llm.Provider{failingProvider{name: "bad"}}}
+	v, err := New(fs).WithLLM(chain).Run(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Claims) == 0 {
+		t.Error("want deterministic claims to still be present")
+	}
+	found := false
+	for _, n := range v.Notes {
+		if strings.Contains(n, "LLM extraction unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("notes = %v, want a note that LLM extraction was unavailable", v.Notes)
+	}
 }

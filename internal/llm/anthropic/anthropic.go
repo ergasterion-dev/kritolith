@@ -57,7 +57,16 @@ func New(opts Options) *Adapter {
 		baseURL: strings.TrimSuffix(base, "/"),
 		model:   opts.Model,
 		apiKey:  opts.APIKey,
-		client:  &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout: timeout,
+			// No legitimate Messages API response is ever a redirect;
+			// refusing to follow one avoids resending the request
+			// (with its x-api-key header) to a server-controlled
+			// destination.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 

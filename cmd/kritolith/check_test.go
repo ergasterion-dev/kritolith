@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
@@ -223,29 +224,71 @@ func TestCheckWithLLMConfigured(t *testing.T) {
 	}
 }
 
+// TestCheckBlocksCloudWithoutAllowCloud proves cloud gating actually
+// blocks the call, not just that no LLM claims showed up in the
+// verdict. It points the "cloud" provider (type: anthropic, which is
+// always IsLocal() == false regardless of base_url) at a local
+// httptest.Server that counts requests. With allow_cloud: false the
+// counter must stay at zero: the server is never hit at all. A second
+// case with allow_cloud: true on the same repo asserts the counter
+// becomes nonzero, so the test can distinguish "gating blocked it"
+// from "gating never worked, config was just wrong" (which the old
+// version of this test, pointed at the real api.anthropic.com with no
+// base_url, could never detect).
 func TestCheckBlocksCloudWithoutAllowCloud(t *testing.T) {
-	cfgBody := `{
-		"projects": [{"repo": "a/b", "allow_cloud": false}],
-		"llm": {
-			"providers": {"claude": {"type": "anthropic", "api_key_env": "KRITOLITH_TEST_UNSET_KEY", "model": "m"}},
-			"tasks": {"extract": ["claude"]}
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(`{"content":[{"type":"text","text":"{\"claims\": [{\"kind\": \"vuln_class\", \"value\": \"dos\", \"evidence\": \"e\"}]}"}]}`))
+	}))
+	defer srv.Close()
+
+	cfgBody := func(allowCloud bool) string {
+		return fmt.Sprintf(`{
+			"projects": [{"repo": "a/b", "allow_cloud": %v}],
+			"llm": {
+				"providers": {"claude": {"type": "anthropic", "base_url": %q, "model": "m"}},
+				"tasks": {"extract": ["claude"]}
+			}
+		}`, allowCloud, srv.URL)
+	}
+
+	t.Run("blocked", func(t *testing.T) {
+		atomic.StoreInt32(&calls, 0)
+		cfgPath := writeConfigFile(t, cfgBody(false))
+		dataDir := filepath.Join(t.TempDir(), "data")
+		p := writeReport(t, "See a.go for the bug.")
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), []string{"check", "--json", "--repo", "a/b", "--ref", netSHA, "--data-dir", dataDir, "--config", cfgPath, p}, &out, &errOut)
+		if code != 0 {
+			t.Fatalf("code = %d, stderr: %s", code, errOut.String())
 		}
-	}`
-	cfgPath := writeConfigFile(t, cfgBody)
-	dataDir := filepath.Join(t.TempDir(), "data")
-	p := writeReport(t, "See a.go for the bug.")
-	var out, errOut bytes.Buffer
-	code := run(context.Background(), []string{"check", "--json", "--repo", "a/b", "--ref", netSHA, "--data-dir", dataDir, "--config", cfgPath, p}, &out, &errOut)
-	if code != 0 {
-		t.Fatalf("code = %d, stderr: %s", code, errOut.String())
-	}
-	var v report.Verdict
-	if err := json.Unmarshal(out.Bytes(), &v); err != nil {
-		t.Fatalf("stdout is not JSON: %v", err)
-	}
-	for _, c := range v.Claims {
-		if strings.HasPrefix(c.Source, "llm:") {
-			t.Errorf("claims = %+v, cloud provider should have been blocked (no real network call happens either way)", v.Claims)
+		if got := atomic.LoadInt32(&calls); got != 0 {
+			t.Errorf("calls = %d, want 0: the cloud provider must never actually be hit when allow_cloud is false", got)
 		}
-	}
+		var v report.Verdict
+		if err := json.Unmarshal(out.Bytes(), &v); err != nil {
+			t.Fatalf("stdout is not JSON: %v", err)
+		}
+		for _, c := range v.Claims {
+			if strings.HasPrefix(c.Source, "llm:") {
+				t.Errorf("claims = %+v, cloud provider should have been blocked", v.Claims)
+			}
+		}
+	})
+
+	t.Run("allowed", func(t *testing.T) {
+		atomic.StoreInt32(&calls, 0)
+		cfgPath := writeConfigFile(t, cfgBody(true))
+		dataDir := filepath.Join(t.TempDir(), "data")
+		p := writeReport(t, "See a.go for the bug.")
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), []string{"check", "--json", "--repo", "a/b", "--ref", netSHA, "--data-dir", dataDir, "--config", cfgPath, p}, &out, &errOut)
+		if code != 0 {
+			t.Fatalf("code = %d, stderr: %s", code, errOut.String())
+		}
+		if got := atomic.LoadInt32(&calls); got == 0 {
+			t.Error("calls = 0, want at least 1: allow_cloud: true must let the cloud provider actually run")
+		}
+	})
 }

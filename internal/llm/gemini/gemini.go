@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -55,7 +54,16 @@ func New(opts Options) *Adapter {
 		baseURL: strings.TrimSuffix(base, "/"),
 		model:   opts.Model,
 		apiKey:  opts.APIKey,
-		client:  &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout: timeout,
+			// No legitimate Gemini API response is ever a redirect;
+			// refusing to follow one avoids resending the request
+			// (with its Authorization-equivalent header) to a
+			// server-controlled destination.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -165,12 +173,17 @@ func (a *Adapter) post(ctx context.Context, path string, body, out any) error {
 	if err != nil {
 		return fmt.Errorf("gemini: %s: encode request: %w", a.name, err)
 	}
-	u := a.baseURL + path + "?key=" + url.QueryEscape(a.apiKey)
+	u := a.baseURL + path
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(buf))
 	if err != nil {
 		return fmt.Errorf("gemini: %s: build request: %w", a.name, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// The API key goes in a header, not a "?key=" query parameter:
+	// Go's url.Error only redacts userinfo passwords in error strings,
+	// never query parameters, so a query-param key would leak verbatim
+	// in any transport-level error (timeout, connection refused, ...).
+	httpReq.Header.Set("x-goog-api-key", a.apiKey)
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("gemini: %s: %w", a.name, err)

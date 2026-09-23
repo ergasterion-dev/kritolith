@@ -16,6 +16,13 @@ import (
 // than being widened piecemeal every week.
 type StageResults struct {
 	Claims []report.Claim
+	// LLMUnavailable is true when the pipeline configured an LLM
+	// extraction chain but every provider in it failed, so the
+	// verdict's claims are deterministic-only even though an operator
+	// expected LLM-assisted extraction. It's false, and produces no
+	// note, when no LLM was configured at all (the normal, expected,
+	// non-error state).
+	LLMUnavailable bool
 }
 
 // Compose builds the verdict from the stage results available so far.
@@ -26,11 +33,14 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 	v := report.Verdict{ReportID: r.ID, Claims: res.Claims}
 	if r.ClaimedRef == "" {
 		v.Outcome = report.OutcomeNeedsInfo
-		v.Notes = []string{"no commit or tag given; can't check claims against the code"}
-		return v
+		v.Notes = append(v.Notes, "no commit or tag given; can't check claims against the code")
+	} else {
+		v.Outcome = report.OutcomeInconclusive
+		v.Notes = append(v.Notes, "grounding, dedupe and sandbox stages are not implemented yet")
 	}
-	v.Outcome = report.OutcomeInconclusive
-	v.Notes = []string{"grounding, dedupe and sandbox stages are not implemented yet"}
+	if res.LLMUnavailable {
+		v.Notes = append(v.Notes, "LLM extraction unavailable; deterministic claims only")
+	}
 	return v
 }
 

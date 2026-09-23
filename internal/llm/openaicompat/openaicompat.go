@@ -50,13 +50,37 @@ func New(opts Options) (*Adapter, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
+	local := llm.IsLocalHost(u.Host)
+	client := &http.Client{
+		Timeout: timeout,
+		// No legitimate OpenAI-compatible API response is ever a
+		// redirect; refusing to follow one avoids resending the
+		// request (with its Authorization header and, for /chat/
+		// completions, the report body) to a server-controlled
+		// destination.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if local {
+		// A "local" provider's traffic must never leave the machine.
+		// The default transport (used implicitly when Transport is
+		// nil) honors HTTP_PROXY/HTTPS_PROXY for any non-loopback
+		// host, so a provider on an RFC1918 address could still be
+		// routed through an environment-configured corporate proxy.
+		// Explicitly disabling proxying here closes that gap. This is
+		// intentionally NOT applied to cloud-bound traffic (see
+		// docs/architecture.md), which may legitimately need a proxy
+		// to reach the internet.
+		client.Transport = &http.Transport{Proxy: nil}
+	}
 	return &Adapter{
 		name:    opts.Name,
 		baseURL: strings.TrimSuffix(opts.BaseURL, "/"),
 		model:   opts.Model,
 		apiKey:  opts.APIKey,
-		local:   llm.IsLocalHost(u.Host),
-		client:  &http.Client{Timeout: timeout},
+		local:   local,
+		client:  client,
 	}, nil
 }
 

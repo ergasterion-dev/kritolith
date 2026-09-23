@@ -7,12 +7,21 @@ package llmextract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
+
+// errInvalidSchema marks a provider response that decoded but didn't
+// match the claim schema, as distinct from a transport-level failure.
+// It's used only to pick a short, content-free log reason in Extract;
+// it never carries the underlying error text, which may echo
+// LLM-reflected report content.
+var errInvalidSchema = errors.New("invalid schema")
 
 const maxClaims = 50
 
@@ -57,11 +66,22 @@ type Chain interface {
 // times out, or returns invalid JSON is skipped, not fatal: if every
 // provider fails, Extract returns no claims and no error, since
 // deterministic extraction already ran and the caller must not treat
-// this as a pipeline failure.
+// this as a pipeline failure. Each skipped provider is logged at Warn
+// with its name and the report ID, so an operator can see extraction
+// silently degrading to deterministic-only instead of it going
+// unnoticed forever; per CLAUDE.md's "report content only at debug
+// level" convention, the log carries a short reason only, never report
+// body content or the raw error detail.
 func Extract(ctx context.Context, chain Chain, r report.Report) []report.Claim {
 	for _, p := range chain.Chain("extract", r.ID, r.Repo) {
 		claims, err := extractFrom(ctx, p, r.Body)
 		if err != nil {
+			reason := "request failed"
+			if errors.Is(err, errInvalidSchema) {
+				reason = "invalid schema"
+			}
+			slog.Default().Warn("llm extraction: provider failed, skipping",
+				"provider", p.Name(), "report_id", r.ID, "reason", reason)
 			continue
 		}
 		return claims
@@ -83,7 +103,7 @@ func extractFrom(ctx context.Context, p llm.Provider, body string) ([]report.Cla
 	dec := json.NewDecoder(strings.NewReader(extractJSONObject(resp.Text)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("llmextract: %s: invalid schema: %w", p.Name(), err)
+		return nil, fmt.Errorf("llmextract: %s: %w: %v", p.Name(), errInvalidSchema, err)
 	}
 	source := "llm:" + p.Name()
 	claims := make([]report.Claim, 0, len(raw.Claims))

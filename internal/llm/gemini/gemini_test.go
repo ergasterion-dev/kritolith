@@ -19,8 +19,11 @@ func TestCompleteSuccess(t *testing.T) {
 		if !strings.HasSuffix(r.URL.Path, "/models/gemini-test:generateContent") {
 			t.Errorf("path = %q", r.URL.Path)
 		}
-		if r.URL.Query().Get("key") != "secret" {
-			t.Errorf("key query param = %q", r.URL.Query().Get("key"))
+		if got := r.URL.Query().Get("key"); got != "" {
+			t.Errorf("key must not be sent as a query param, got %q", got)
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "secret" {
+			t.Errorf("x-goog-api-key header = %q, want %q", got, "secret")
 		}
 		w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi there"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`))
 	}))
@@ -132,5 +135,69 @@ func TestIsLocalAlwaysFalse(t *testing.T) {
 	a := New(Options{Name: "test", BaseURL: "http://127.0.0.1:8080", Model: "m"})
 	if a.IsLocal() {
 		t.Error("want IsLocal always false for the gemini adapter")
+	}
+}
+
+// TestAPIKeyNeverLeaksOnTransportError proves the API key is never
+// exposed through Go's url.Error, which embeds the full request URL
+// (including any query parameters) in transport-level error strings.
+// It also confirms the key reaches the server only via the
+// x-goog-api-key header, never in the URL.
+func TestAPIKeyNeverLeaksOnTransportError(t *testing.T) {
+	const apiKey = "SUPERSECRETKEY"
+	type observed struct{ header, rawQuery string }
+	captured := make(chan observed, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- observed{header: r.Header.Get("x-goog-api-key"), rawQuery: r.URL.RawQuery}
+		time.Sleep(100 * time.Millisecond) // outlast the client's timeout
+	}))
+	defer srv.Close()
+
+	a := New(Options{Name: "test", BaseURL: srv.URL, Model: "m", APIKey: apiKey, Timeout: 10 * time.Millisecond})
+	_, err := a.Complete(context.Background(), llm.CompleteRequest{Messages: []llm.Message{{Role: "user", Content: "hi"}}})
+	if err == nil {
+		t.Fatal("want timeout error")
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Fatalf("error leaks the API key: %v", err)
+	}
+
+	var got observed
+	select {
+	case got = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never observed a request")
+	}
+	if got.rawQuery != "" {
+		t.Errorf("request URL carried a query string %q, want none (key must be header-only)", got.rawQuery)
+	}
+	if got.header != apiKey {
+		t.Errorf("x-goog-api-key header = %q, want %q", got.header, apiKey)
+	}
+}
+
+// TestCompleteDoesNotFollowRedirect proves a 307 from the configured
+// endpoint is not followed: no legitimate Gemini response is ever a
+// redirect, and following one would resend the request (and its
+// x-goog-api-key header) to a server-controlled destination.
+func TestCompleteDoesNotFollowRedirect(t *testing.T) {
+	var evilHit bool
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHit = true
+	}))
+	defer evil.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	a := New(Options{Name: "test", BaseURL: srv.URL, Model: "m", APIKey: "secret"})
+	_, err := a.Complete(context.Background(), llm.CompleteRequest{Messages: []llm.Message{{Role: "user", Content: "hi"}}})
+	if err == nil {
+		t.Fatal("want an error: a 307 has no usable response body")
+	}
+	if evilHit {
+		t.Fatal("redirect target was hit; client followed the redirect")
 	}
 }
