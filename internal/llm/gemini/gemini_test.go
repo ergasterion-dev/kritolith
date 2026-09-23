@@ -2,6 +2,8 @@ package gemini
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +35,40 @@ func TestCompleteSuccess(t *testing.T) {
 	}
 	if resp.Text != "hi there" {
 		t.Errorf("Text = %q", resp.Text)
+	}
+}
+
+func TestCompleteForwardsGenerationConfig(t *testing.T) {
+	var capturedReq generateRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &capturedReq); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`))
+	}))
+	defer srv.Close()
+
+	a := New(Options{Name: "test", BaseURL: srv.URL, Model: "m", APIKey: "key"})
+	_, err := a.Complete(context.Background(), llm.CompleteRequest{
+		Temperature: 0.5,
+		MaxTokens:   100,
+		Messages:    []llm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedReq.GenerationConfig == nil {
+		t.Fatal("generationConfig is nil")
+	}
+	if capturedReq.GenerationConfig.Temperature != 0.5 {
+		t.Errorf("temperature = %v, want 0.5", capturedReq.GenerationConfig.Temperature)
+	}
+	if capturedReq.GenerationConfig.MaxOutputTokens != 100 {
+		t.Errorf("maxOutputTokens = %d, want 100", capturedReq.GenerationConfig.MaxOutputTokens)
 	}
 }
 

@@ -71,9 +71,15 @@ type content struct {
 	Parts []part `json:"parts"`
 }
 
+type generationConfig struct {
+	Temperature     float64 `json:"temperature,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+}
+
 type generateRequest struct {
-	Contents          []content `json:"contents"`
-	SystemInstruction *content  `json:"systemInstruction,omitempty"`
+	Contents          []content         `json:"contents"`
+	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
+	SystemInstruction *content          `json:"systemInstruction,omitempty"`
 }
 
 type candidate struct {
@@ -106,6 +112,9 @@ func (a *Adapter) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Co
 	}
 	if system.Len() > 0 {
 		body.SystemInstruction = &content{Parts: []part{{Text: system.String()}}}
+	}
+	if req.Temperature != 0 || req.MaxTokens != 0 {
+		body.GenerationConfig = &generationConfig{Temperature: req.Temperature, MaxOutputTokens: req.MaxTokens}
 	}
 	var out generateResponse
 	if err := a.post(ctx, fmt.Sprintf("/models/%s:generateContent", a.model), body, &out); err != nil {
