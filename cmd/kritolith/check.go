@@ -51,6 +51,11 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		cfg = &c
 	}
+	if cfg != nil && len(cfg.Projects) > 0 {
+		if err := requireConfiguredProject(*cfg, *repo); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	dir, err := resolveDataDir(*dataDir, cfg)
 	if err != nil {
 		return fail(stderr, err)
@@ -65,7 +70,18 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	defer st.Close()
 
-	v, err := pipeline.New(st).Run(ctx, r)
+	p := pipeline.New(st)
+	if cfg != nil {
+		router, err := buildRouter(*cfg, nil)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if router != nil {
+			p = p.WithLLM(router)
+		}
+	}
+
+	v, err := p.Run(ctx, r)
 	if err != nil {
 		return fail(stderr, err)
 	}

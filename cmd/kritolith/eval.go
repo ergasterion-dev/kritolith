@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/eval"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
@@ -21,8 +22,9 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	corpus := fs.String("corpus", "testdata/corpus", "corpus directory")
 	dataDir := fs.String("data-dir", "", "keep results in this data dir (default: a temporary dir, removed afterwards)")
+	cfgPath := fs.String("config", "", "path to kritolith.json (runs extraction and LLM routing over the corpus)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: kritolith eval [--corpus dir] [--data-dir dir]")
+		fmt.Fprintln(stderr, "Usage: kritolith eval [--corpus dir] [--data-dir dir] [--config file]")
 		fs.PrintDefaults()
 	}
 	pos, err := parseInterspersed(fs, args)
@@ -35,6 +37,15 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(pos) != 0 {
 		fs.Usage()
 		return 2
+	}
+
+	var cfg *config.Config
+	if *cfgPath != "" {
+		c, err := config.Load(*cfgPath)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		cfg = &c
 	}
 
 	cases, err := eval.LoadCorpus(*corpus)
@@ -60,6 +71,15 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	defer st.Close()
 	p := pipeline.New(st)
+	if cfg != nil {
+		router, err := buildRouter(*cfg, nil)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		if router != nil {
+			p = p.WithLLM(router)
+		}
+	}
 
 	sb := eval.Run(ctx, cases, func(ctx context.Context, c eval.Case) (report.Outcome, error) {
 		opts := file.Options{Repo: c.Meta.Repo, Ref: c.Meta.Ref, ReportPath: filepath.Join(c.Dir, "report.md")}

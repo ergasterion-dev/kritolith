@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -21,6 +24,15 @@ const netSHA = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
 func writeReport(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func writeConfigFile(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "kritolith.json")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +108,7 @@ func TestCheckErrors(t *testing.T) {
 		{"bad config", []string{"check", "--repo", "a/b", "--config", filepath.Join(t.TempDir(), "missing.json"), p}, 1, "config"},
 		// Regression: --data-dir must not shortcut past a broken --config.
 		{"data-dir set but config missing", []string{"check", "--repo", "a/b", "--data-dir", dataDir, "--config", filepath.Join(t.TempDir(), "missing2.json"), p}, 1, "config"},
+		{"repo not a configured project", []string{"check", "--repo", "other/repo", "--data-dir", dataDir, "--config", writeConfigFile(t, `{"projects":[{"repo":"a/b"}]}`), p}, 1, "not one of the configured projects"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,6 +166,86 @@ func TestResolveDataDir(t *testing.T) {
 		got, err := resolveDataDir(tt.flagDir, tt.cfg)
 		if err != nil || got != tt.want {
 			t.Errorf("resolveDataDir(%q, %v) = %q, %v; want %q", tt.flagDir, tt.cfg, got, err, tt.want)
+		}
+	}
+}
+
+func TestRequireConfiguredProject(t *testing.T) {
+	cfg := config.Config{Projects: []config.Project{{Repo: "a/b"}, {Repo: "c/d"}}}
+	if err := requireConfiguredProject(cfg, "A/B"); err != nil {
+		t.Errorf("case-insensitive match failed: %v", err)
+	}
+	if err := requireConfiguredProject(cfg, "x/y"); err == nil {
+		t.Error("want error for unconfigured repo")
+	}
+}
+
+func TestCheckWithLLMConfigured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"claims\": [{\"kind\": \"vuln_class\", \"value\": \"dos\", \"evidence\": \"resource exhaustion\"}]}"}}]}`))
+	}))
+	defer srv.Close()
+
+	cfgBody := fmt.Sprintf(`{
+		"projects": [{"repo": "a/b", "allow_cloud": false}],
+		"llm": {
+			"providers": {"local": {"type": "openaicompat", "base_url": %q, "model": "m"}},
+			"tasks": {"extract": ["local"]}
+		}
+	}`, srv.URL)
+	cfgPath := writeConfigFile(t, cfgBody)
+
+	dataDir := filepath.Join(t.TempDir(), "data")
+	p := writeReport(t, "See internal/hpack/decode.go:412 for the bug.")
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"check", "--json", "--repo", "a/b", "--ref", netSHA, "--data-dir", dataDir, "--config", cfgPath, p}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr: %s", code, errOut.String())
+	}
+	var v report.Verdict
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, out.String())
+	}
+	var hasDeterministic, hasLLM bool
+	for _, c := range v.Claims {
+		if c.Source == "deterministic" {
+			hasDeterministic = true
+		}
+		if c.Source == "llm:local" {
+			hasLLM = true
+		}
+	}
+	if !hasDeterministic {
+		t.Errorf("claims = %+v, missing deterministic claim", v.Claims)
+	}
+	if !hasLLM {
+		t.Errorf("claims = %+v, missing LLM claim", v.Claims)
+	}
+}
+
+func TestCheckBlocksCloudWithoutAllowCloud(t *testing.T) {
+	cfgBody := `{
+		"projects": [{"repo": "a/b", "allow_cloud": false}],
+		"llm": {
+			"providers": {"claude": {"type": "anthropic", "api_key_env": "KRITOLITH_TEST_UNSET_KEY", "model": "m"}},
+			"tasks": {"extract": ["claude"]}
+		}
+	}`
+	cfgPath := writeConfigFile(t, cfgBody)
+	dataDir := filepath.Join(t.TempDir(), "data")
+	p := writeReport(t, "See a.go for the bug.")
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"check", "--json", "--repo", "a/b", "--ref", netSHA, "--data-dir", dataDir, "--config", cfgPath, p}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr: %s", code, errOut.String())
+	}
+	var v report.Verdict
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil {
+		t.Fatalf("stdout is not JSON: %v", err)
+	}
+	for _, c := range v.Claims {
+		if strings.HasPrefix(c.Source, "llm:") {
+			t.Errorf("claims = %+v, cloud provider should have been blocked (no real network call happens either way)", v.Claims)
 		}
 	}
 }

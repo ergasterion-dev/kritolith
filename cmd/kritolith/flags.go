@@ -2,7 +2,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 )
@@ -38,4 +40,16 @@ func resolveDataDir(flagDir string, cfg *config.Config) (string, error) {
 		return cfg.DataDir, nil
 	}
 	return config.DefaultDataDir()
+}
+
+// requireConfiguredProject checks that repo matches one of cfg's
+// projects (case-insensitive). Kritolith needs this to know a
+// project's allow_cloud setting before it can safely run any LLM task.
+func requireConfiguredProject(cfg config.Config, repo string) error {
+	for _, p := range cfg.Projects {
+		if strings.EqualFold(p.Repo, repo) {
+			return nil
+		}
+	}
+	return fmt.Errorf("--repo %q is not one of the configured projects", repo)
 }
