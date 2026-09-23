@@ -25,20 +25,17 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// resolveDataDir picks the data dir: --data-dir, then data_dir from
-// --config, then the platform default.
-func resolveDataDir(flagDir, cfgPath string) (string, error) {
+// resolveDataDir picks the data dir: --data-dir, then data_dir from cfg
+// (the already-loaded --config, if any), then the platform default.
+// It never loads --config itself: the caller must always load --config
+// when given, even if --data-dir also is, so a broken --config is never
+// silently ignored.
+func resolveDataDir(flagDir string, cfg *config.Config) (string, error) {
 	if flagDir != "" {
 		return filepath.Abs(flagDir)
 	}
-	if cfgPath != "" {
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return "", err
-		}
-		if cfg.DataDir != "" {
-			return cfg.DataDir, nil
-		}
+	if cfg != nil && cfg.DataDir != "" {
+		return cfg.DataDir, nil
 	}
 	return config.DefaultDataDir()
 }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -52,4 +54,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "kritolith: unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+// fail prints a runtime error and returns the exit code for it. err may
+// carry reporter-controlled text (a hostile title, PoC name, ...), so it
+// is passed through report.Printable before reaching the terminal.
+func fail(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "kritolith: %s\n", report.Printable(err.Error()))
+	return 1
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
 	"github.com/ergasterion-dev/kritolith/internal/store"
@@ -40,34 +41,39 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 
-	dir, err := resolveDataDir(*dataDir, *cfgPath)
+	// --config is always loaded when given, even if --data-dir is also
+	// given: a broken --config must never be silently ignored.
+	var cfg *config.Config
+	if *cfgPath != "" {
+		c, err := config.Load(*cfgPath)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		cfg = &c
+	}
+	dir, err := resolveDataDir(*dataDir, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	r, err := file.Load(file.Options{Repo: *repo, Ref: *ref, ReportPath: pos[0], PoCDir: *poc})
 	if err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	st, err := store.Open(ctx, dir)
 	if err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	defer st.Close()
 
 	v, err := pipeline.New(st).Run(ctx, r)
 	if err != nil {
-		fmt.Fprintf(stderr, "kritolith: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(v); err != nil {
-			fmt.Fprintf(stderr, "kritolith: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 		return 0
 	}

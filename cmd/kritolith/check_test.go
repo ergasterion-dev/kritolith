@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/store"
 )
@@ -93,6 +94,8 @@ func TestCheckErrors(t *testing.T) {
 		{"bad repo", []string{"check", "--repo", "nope", "--data-dir", dataDir, p}, 1, "invalid repo"},
 		{"option-like ref", []string{"check", "--repo", "a/b", "--ref=--upload-pack=x", "--data-dir", dataDir, p}, 1, "invalid ref"},
 		{"bad config", []string{"check", "--repo", "a/b", "--config", filepath.Join(t.TempDir(), "missing.json"), p}, 1, "config"},
+		// Regression: --data-dir must not shortcut past a broken --config.
+		{"data-dir set but config missing", []string{"check", "--repo", "a/b", "--data-dir", dataDir, "--config", filepath.Join(t.TempDir(), "missing2.json"), p}, 1, "config"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -105,21 +108,51 @@ func TestCheckErrors(t *testing.T) {
 	}
 }
 
-func TestResolveDataDir(t *testing.T) {
-	cfg := filepath.Join(t.TempDir(), "k.json")
-	if err := os.WriteFile(cfg, []byte(`{"data_dir":"/from/config"}`), 0o600); err != nil {
+// TestCheckSanitizesPoCSymlinkError verifies that a hostile PoC filename
+// (a reporter-controlled symlink name carrying terminal escape bytes)
+// never reaches stderr unsanitized.
+func TestCheckSanitizesPoCSymlinkError(t *testing.T) {
+	dir := t.TempDir()
+	p := writeReport(t, "report")
+	poc := filepath.Join(dir, "poc")
+	if err := os.MkdirAll(poc, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evilName := "a\x1b]0;PWNED\x07\x1b[31mred"
+	if err := os.Symlink(target, filepath.Join(poc, evilName)); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(t.TempDir(), "data")
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"check", "--repo", "a/b", "--data-dir", dataDir, "--poc", poc, p}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stderr: %s", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "\x1b") {
+		t.Fatalf("stderr contains a raw ESC byte: %q", errOut.String())
+	}
+}
+
+func TestResolveDataDir(t *testing.T) {
+	cfg := &config.Config{DataDir: "/from/config"}
 	t.Setenv("XDG_DATA_HOME", "/xdg")
-	tests := []struct{ flagDir, cfg, want string }{
+	tests := []struct {
+		flagDir string
+		cfg     *config.Config
+		want    string
+	}{
 		{"/from/flag", cfg, "/from/flag"},
 		{"", cfg, "/from/config"},
-		{"", "", "/xdg/kritolith"},
+		{"", nil, "/xdg/kritolith"},
 	}
 	for _, tt := range tests {
 		got, err := resolveDataDir(tt.flagDir, tt.cfg)
 		if err != nil || got != tt.want {
-			t.Errorf("resolveDataDir(%q, %q) = %q, %v; want %q", tt.flagDir, tt.cfg, got, err, tt.want)
+			t.Errorf("resolveDataDir(%q, %v) = %q, %v; want %q", tt.flagDir, tt.cfg, got, err, tt.want)
 		}
 	}
 }
