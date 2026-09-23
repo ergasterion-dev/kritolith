@@ -94,6 +94,9 @@ func loadCase(dir string, kind Kind) (Case, error) {
 	if err := dec.Decode(&m); err != nil {
 		return fail("meta.json: %v", err)
 	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fail("meta.json: trailing data after the JSON object")
+	}
 
 	if err := report.ValidateRepo(m.Repo); err != nil {
 		return fail("%v", err)

@@ -51,6 +51,7 @@ func TestLoadCorpusRejects(t *testing.T) {
 		{"real with fabricated source", "real", "r1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"REPRODUCED","source":"fabricated"}`, "GHSA-"},
 		{"real expecting grounding failure", "real", "r1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"GROUNDING_FAILED","source":"GO-2024-1"}`, "never"},
 		{"fabricated with advisory source", "fabricated", "f1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"INCONCLUSIVE","source":"GHSA-x"}`, "fabricated"},
+		{"trailing data", "fabricated", "f1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"INCONCLUSIVE","source":"fabricated"}{"repo":"a/b"}`, "trailing data"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
