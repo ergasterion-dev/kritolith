@@ -64,10 +64,11 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		f.Close()
 		return nil, fmt.Errorf("store: %s is not a regular file", path)
 	}
-	f.Close()
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("store: chmod %s: %w", path, err)
 	}
+	f.Close()
 
 	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
