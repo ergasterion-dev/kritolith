@@ -1,0 +1,7 @@
+{
+  "repo": "gorilla/websocket",
+  "ref": "ce903f6d1d961af3a8602f2842c8b1c3fca58c4d",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Invented method (*Conn).readCompressedFrameInto; compression.go is real (tag v1.5.3)."
+}

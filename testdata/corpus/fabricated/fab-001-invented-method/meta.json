@@ -1,0 +1,7 @@
+{
+  "repo": "golang/net",
+  "ref": "e1fcd82abba34df74614020343be8eb1fe85f0d9",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Invented method (*Framer).ReadContinuationUnsafe; http2/frame.go is real (tag v0.38.0)."
+}

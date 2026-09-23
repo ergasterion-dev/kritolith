@@ -1,0 +1,7 @@
+{
+  "repo": "spf13/cobra",
+  "ref": "40b5bc1437a564fc795d388b23835e84f54cd1d1",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Invented file shell_expand.go and function expandShellArgs (tag v1.9.1)."
+}
