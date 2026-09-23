@@ -53,6 +53,22 @@ func TestRunAndScore(t *testing.T) {
 	}
 }
 
+// TestScoreboardWriteSanitizesError verifies that a hostile error string
+// (e.g. from a PoC filename) never reaches the table with raw escape
+// bytes intact.
+func TestScoreboardWriteSanitizesError(t *testing.T) {
+	sb := Scoreboard{Results: []Result{
+		{Case: Case{ID: "x", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeInconclusive}}, Err: errors.New("bad \x1b[31mred\tname")},
+	}}
+	var buf bytes.Buffer
+	if err := sb.Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "\x1b") {
+		t.Fatalf("scoreboard output contains a raw ESC byte: %q", buf.String())
+	}
+}
+
 func TestScoreboardPassing(t *testing.T) {
 	sb := Scoreboard{Results: []Result{{Case: Case{ID: "f1", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeGroundingFailed}}, Got: report.OutcomeInconclusive}}}
 	if sb.Failed() {

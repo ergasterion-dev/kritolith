@@ -98,7 +98,7 @@ func (s Scoreboard) Write(w io.Writer) error {
 		got, mark := string(r.Got), "✗"
 		switch {
 		case r.Err != nil:
-			got = "error: " + r.Err.Error()
+			got = "error: " + report.Printable(r.Err.Error())
 		case r.Got == r.Case.Meta.Expected:
 			mark = "✓"
 		}
