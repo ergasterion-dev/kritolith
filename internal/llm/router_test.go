@@ -22,7 +22,9 @@ func (f *fakeProvider) Complete(ctx context.Context, req CompleteRequest) (Compl
 	}
 	return CompleteResponse{Text: f.text}, nil
 }
-func (f *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) { return nil, nil }
+func (f *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return nil, nil
+}
 func (f *fakeProvider) Name() string  { return f.name }
 func (f *fakeProvider) IsLocal() bool { return f.local }
 
