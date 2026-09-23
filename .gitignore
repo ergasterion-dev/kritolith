@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# macOS
+.DS_Store
+
+# Private planning doc (copy kept in ../kritolith-personal-docs-never-to-push)
+Claude_Web_Handoff.md
