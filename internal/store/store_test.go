@@ -95,6 +95,31 @@ func TestOpenRejectsBadDataDir(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsSymlinkedDB(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "kritolith.db")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want symlink error", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "secret" {
+		t.Fatalf("symlink target modified: got %q", got)
+	}
+}
+
 func TestOpenPathWithSpaces(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "my data")
 	s, err := Open(context.Background(), dir)

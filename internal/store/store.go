@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver (pure Go, no cgo)
@@ -47,9 +48,21 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, dbFile)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, fmt.Errorf("store: %s is a symlink; refusing to open it", path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: create %s: %w", path, err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("store: stat %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("store: %s is not a regular file", path)
 	}
 	f.Close()
 	if err := os.Chmod(path, 0o600); err != nil {
@@ -86,6 +99,9 @@ func ensurePrivateDir(dir string) error {
 	}
 	if perm := st.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("store: data dir %s has mode %v; it must not be accessible by group or others (run: chmod 700 %s)", dir, perm, dir)
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Uid) != os.Geteuid() {
+		return fmt.Errorf("store: data dir %s is owned by uid %d, not the current user (%d)", dir, sys.Uid, os.Geteuid())
 	}
 	return nil
 }
