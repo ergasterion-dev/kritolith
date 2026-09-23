@@ -1,0 +1,20 @@
+{
+  "data_dir": "/var/lib/kritolith",
+  "projects": [
+    { "repo": "owner/name", "allow_cloud": false, "notify": ["sec@example.org"] }
+  ],
+  "llm": {
+    "providers": {
+      "local-big":   { "type": "openaicompat", "base_url": "http://127.0.0.1:11434/v1", "model": "<32b coder model>" },
+      "local-small": { "type": "openaicompat", "base_url": "http://127.0.0.1:11434/v1", "model": "<8b model>" },
+      "local-embed": { "type": "openaicompat", "base_url": "http://127.0.0.1:11434/v1", "model": "<embedding model>" },
+      "claude":      { "type": "anthropic", "api_key_env": "ANTHROPIC_API_KEY", "model": "<model id>" }
+    },
+    "tasks": {
+      "extract": ["local-big", "local-small"],
+      "embed":   ["local-embed"],
+      "draft":   ["local-small", "claude"]
+    }
+  },
+  "sandbox": { "runtime": "runsc", "run_timeout_seconds": 120, "memory_mb": 2048, "cpus": 2 }
+}
