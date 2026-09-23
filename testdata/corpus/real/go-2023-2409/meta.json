@@ -1,0 +1,7 @@
+{
+  "repo": "dvsekhvalnov/jose2go",
+  "ref": "c5d6a57d4843d9cc91403187d16eea0a70f64db4",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2023-2409",
+  "notes": "Fix commit a4584e9dd7128608fedbc67892eba9697f0d5317; ref is its parent (checked with gh api). Advisory GHSA-mhpq-9638-x6pw. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 84aab69306da1e050ff6c53499ee883ef1d61f21. Every file and function named in report.md checked at ref with gh api contents + grep. Also checked WrapNewKey exists in pbse2_hmac_aeskw.go."
+}

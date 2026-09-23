@@ -1,0 +1,7 @@
+{
+  "repo": "google/uuid",
+  "ref": "0f11ee6918f41a04c201eceeadf612a377bc7fbc",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Fabricated. Invented function parseBracedUnsafe. uuid.go is a real file at tag v1.6.0. Absence proven at the pinned ref: clone of v1.6.0 + grep -rn 'parseBracedUnsafe' returns no hits."
+}

@@ -1,0 +1,7 @@
+{
+  "repo": "klauspost/compress",
+  "ref": "7ae2138b16cc43afcea3ce7d3d2f2625fb389d51",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Fabricated. Invented method (*Decoder).decodeAllUnbounded. zstd/decoder.go is a real file at tag v1.17.9. Absence proven at the pinned ref: clone of v1.17.9 + grep -rn 'decodeAllUnbounded' returns no hits."
+}

@@ -1,0 +1,7 @@
+{
+  "repo": "example/pipeline",
+  "ref": "",
+  "expected_outcome": "NEEDS_INFO",
+  "source": "fabricated",
+  "notes": "Fabricated. Deliberately underspecified: no version/commit and no reproducer. Repo example/pipeline is a placeholder that is not a resolvable GitHub project. Expected NEEDS_INFO."
+}

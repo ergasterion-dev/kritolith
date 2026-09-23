@@ -1,0 +1,7 @@
+{
+  "repo": "microcosm-cc/bluemonday",
+  "ref": "3cce251c9ed2a9ee66c8f8984fff3d19d45999df",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2022-0762",
+  "notes": "Fix commit 524f142fe46e945b7dcd291d7805c4b7dcf75bee; ref is its parent (checked with gh api). Advisory GHSA-3x58-xr87-2fcj. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD aba082a57c7522316c772ab0dec7e5dbc9833bfa. Every file and function named in report.md checked at ref with gh api contents + grep. Input from TestIssue111ScriptTags in the fix commit, but written as an interpreted Go string: upstream used a raw string, which passes a literal backslash-u sequence and does not exercise the bug (checked: that form passes at the vulnerable ref)."
+}

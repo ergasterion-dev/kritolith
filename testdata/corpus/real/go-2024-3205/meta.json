@@ -1,0 +1,7 @@
+{
+  "repo": "gomarkdown/markdown",
+  "ref": "afa4a469d4f9a75c1dfba0b8c41775ee7cc7537e",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2024-3205",
+  "notes": "Fix commit a2a9c4f76ef5a5c32108e36f7c47f8d310322252; ref is its parent (checked with gh api). Advisory GHSA-xhr3-wf7j-h255. PoC dir: parser. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD e177decc3c2f4eb6b36b645a43fb0c8011a76f09. Every file and function named in report.md checked at ref with gh api contents + grep. Input is TestBug311 from the fix commit (issue #311)."
+}

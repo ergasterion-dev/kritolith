@@ -1,0 +1,7 @@
+{
+  "repo": "gorilla/schema",
+  "ref": "180f71e625073e210314dc8ca83dfbbbd0096dfe",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2024-2958",
+  "notes": "Fix commit cd59f2f12cbdfa9c06aa63e425d1fe4a806967ff; ref is its parent (checked with gh api). Advisory GHSA-3669-72x9-r9p3. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD cd59f2f12cbdfa9c06aa63e425d1fe4a806967ff. Every file and function named in report.md checked at ref with gh api contents + grep. Current default-branch HEAD equals the fix commit."
+}

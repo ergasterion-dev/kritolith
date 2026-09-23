@@ -1,0 +1,7 @@
+{
+  "repo": "gorilla/mux",
+  "ref": "b4617d0b9670ad14039b2739167fd35a60f557c5",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Fabricated. Wrong-package claim: CORSMethodMiddleware is real but lives in gorilla/mux/middleware.go (package mux, import path github.com/gorilla/mux), NOT in an import path 'github.com/gorilla/mux/middleware'. Verified at tag v1.8.1: the function exists in package mux, and there is no mux/middleware directory (the claimed package path does not exist)."
+}

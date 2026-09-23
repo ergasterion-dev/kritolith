@@ -1,0 +1,7 @@
+{
+  "repo": "go-yaml/yaml",
+  "ref": "bb4e33bf68bf89cad44d386192cbed201f35b241",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2022-0956",
+  "notes": "Fix commit f221b8435cfb71e54062f6c6e99e9ade30b124d5; ref is its parent (checked with gh api). Advisory GHSA-6q6q-88xp-6f2r. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 944c86a7d29391925ed6ac33bee98a0516f1287a. Every file and function named in report.md checked at ref with gh api contents + grep. Unmarshal is in yaml.go."
+}

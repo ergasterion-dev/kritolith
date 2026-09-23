@@ -1,0 +1,7 @@
+{
+  "repo": "containrrr/shoutrrr",
+  "ref": "2c9378b69b079db2bbad29d383b54a7919434472",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2022-0528",
+  "notes": "Fix commit 6a27056f9d7522a8b493216195cb7634bf4b5c42; ref is its parent (checked with gh api). Advisory GHSA-477v-w82m-634j. PoC dir: pkg/util. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD ccf81390b700948f85ce1c79f6de9ee75c68d9e5. Every file and function named in report.md checked at ref with gh api contents + grep. Sizes from issue #240."
+}

@@ -1,0 +1,7 @@
+{
+  "repo": "prometheus/client_golang",
+  "ref": "6e3f4b1091875216850a486b1c2eb0e5ea852f98",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Fabricated. Wrong-package claim: InstrumentHandlerCounter is real but lives in prometheus/promhttp/instrument_server.go (package promhttp), NOT in an import path 'github.com/prometheus/client_golang/prometheus/httpmetrics'. Verified at tag v1.19.1: the function exists in prometheus/promhttp, and there is no prometheus/httpmetrics directory (the claimed package path does not exist)."
+}

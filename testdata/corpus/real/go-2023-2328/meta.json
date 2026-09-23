@@ -1,0 +1,7 @@
+{
+  "repo": "go-resty/resty",
+  "ref": "105f7185be505f070bfb19df4c3a4535058e0f84",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2023-2328",
+  "notes": "Fix commit 577fed8730d79f583eb48dfc81674164e1fc471e; ref is its parent (checked with gh api). Advisory GHSA-xwh9-gc39-5298. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit. Every file and function named in report.md checked at ref with gh api contents + grep. Reproducer from https://github.com/patrikeh/resty-request-body-issue linked in resty issue #743 (the report referenced by the advisory); testify replaced by plain checks. It is a race, so it loops; in verification it failed on iteration 7. Default-branch HEAD is now resty v3 (module resty.dev/v3) with a different API, so this PoC does not compile at HEAD; the fix is on the v2 line (v2.11.0)."
+}

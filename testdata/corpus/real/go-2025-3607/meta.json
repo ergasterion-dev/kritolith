@@ -1,0 +1,7 @@
+{
+  "repo": "gorilla/csrf",
+  "ref": "a009743572494ccbc9d159005bdc58b86a44ddba",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2025-3607",
+  "notes": "Fix commit 9dd6af1f6d30fc79fb0d972394deebdabad6b5eb; ref is its parent (checked with gh api). Advisory GHSA-rq77-p4h8-4crw. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 9dd6af1f6d30fc79fb0d972394deebdabad6b5eb. Every file and function named in report.md checked at ref with gh api contents + grep. Current default-branch HEAD equals the fix commit. PoC adapted from TestBadReferer in the fix, but built with httptest.NewRequest so r.URL.Scheme is empty like a real server request."
+}

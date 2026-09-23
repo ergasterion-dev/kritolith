@@ -1,0 +1,7 @@
+{
+  "repo": "example/widgets",
+  "ref": "",
+  "expected_outcome": "NEEDS_INFO",
+  "source": "fabricated",
+  "notes": "Fabricated. Deliberately underspecified: no version/commit and no reproducer. Repo example/widgets is a placeholder that is not a resolvable GitHub project. Expected NEEDS_INFO (empty ref is allowed only for NEEDS_INFO)."
+}

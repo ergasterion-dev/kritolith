@@ -1,0 +1,7 @@
+{
+  "repo": "zeromicro/go-zero",
+  "ref": "d953675085476c98772fbc495ccaf47b9fd479df",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2024-2604",
+  "notes": "Fix commit d9d79e930dff6218a873f4f02115df61c38b15db; ref is its parent (checked with gh api). Advisory GHSA-fgxv-gw55-r5fq. PoC dir: rest/internal/cors. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 5b1b5bdc3adcc189b3bd8b77f2cc8a363ec3374c. Every file and function named in report.md checked at ref with gh api contents + grep. Origin pair from the advisory PoC and the 'not safe origin' case the fix added to handlers_test.go."
+}

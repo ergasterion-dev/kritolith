@@ -1,0 +1,7 @@
+{
+  "repo": "gomarkdown/markdown",
+  "ref": "afa4a469d4f9a75c1dfba0b8c41775ee7cc7537e",
+  "expected_outcome": "LIKELY_DUPLICATE",
+  "source": "fabricated",
+  "notes": "Fabricated near-duplicate of real case go-2024-3205 (same repo gomarkdown/markdown, same ref, same function (*Parser).paragraph in parser/block.go). Reworded; expected LIKELY_DUPLICATE."
+}

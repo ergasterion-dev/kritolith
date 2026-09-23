@@ -1,0 +1,7 @@
+{
+  "repo": "labstack/echo",
+  "ref": "88c379ff77278f553a0f3c44d27786b5a450b6e9",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Fabricated. Invented method (*DefaultBinder).bindPathParamsRaw. bind.go is a real file at tag v4.12.0. Absence proven at the pinned ref: clone of v4.12.0 + grep -rn 'bindPathParamsRaw' returns no hits."
+}

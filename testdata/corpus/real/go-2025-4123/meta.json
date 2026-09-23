@@ -1,0 +1,7 @@
+{
+  "repo": "dvsekhvalnov/jose2go",
+  "ref": "48ba0b76bc881767cff2723388f4dd1a47c5104a",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2025-4123",
+  "notes": "Fix commit 0a0673dd7f2820a446de5b04b9094b2291d77d5d; ref is its parent (checked with gh api). Advisory GHSA-9mj6-hxhv-w67j. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 84aab69306da1e050ff6c53499ee883ef1d61f21. Every file and function named in report.md checked at ref with gh api contents + grep. Fix commit is a merge; ref is its first parent (the base branch before the merge). Reproducer is scaled down from sec_test Test_DeflateBomb (400 MB payload) and uses alg=dir so no RSA key is needed."
+}

@@ -1,0 +1,7 @@
+{
+  "repo": "graph-gophers/graphql-go",
+  "ref": "9d31459e3b5dee3cc34ff9733f9e8acbfe09242d",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2022-0300",
+  "notes": "Fix commit eae31ca73eb3473c544710955d1dbebc22605bfe; ref is its parent (checked with gh api). Advisory GHSA-mh3m-8c74-74xh. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 55de4c08168fcbcc724e7c10dbff77c240f5c7cc. Every file and function named in report.md checked at ref with gh api contents + grep. Query from TestCircularFragmentMaxDepth in the fix commit; uses example/starwars from the repo (exists at ref). Advisory lists Schema.ValidateWithVariables / Schema.exec as entry points; the recursion is in validateMaxDepth."
+}

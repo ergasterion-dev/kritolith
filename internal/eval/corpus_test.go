@@ -85,7 +85,7 @@ func TestRepoCorpusIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) < 3 {
-		t.Fatalf("corpus has %d cases, want at least 3", len(cases))
+	if len(cases) < 40 {
+		t.Fatalf("corpus has %d cases, want at least 40", len(cases))
 	}
 }

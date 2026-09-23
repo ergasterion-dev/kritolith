@@ -1,0 +1,7 @@
+{
+  "repo": "helm/helm",
+  "ref": "638ebffbc2e445156f3978f02fd83d9af1e56f5b",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2022-1167",
+  "notes": "Fix commit 3636f6824757ff734cb265b8770efe48c1fb3737; ref is its parent (checked with gh api). Advisory GHSA-6rx9-889q-vv2r. PoC dir: pkg/strvals. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD d31cd6992fc7858922de6ebe5984a06fd6aa0b80. Every file and function named in report.md checked at ref with gh api contents + grep. Fix commit is a merge; ref is its first parent (itself the fix for GO-2022-1165, still vulnerable to this issue). PoC uses 32 levels (fix limit is 30) so it fails fast instead of crashing the test binary."
+}

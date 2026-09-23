@@ -1,0 +1,7 @@
+{
+  "repo": "pion/interceptor",
+  "ref": "791455129d4ef736c4009692e8ce108afe0fff14",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2025-3748",
+  "notes": "Fix commit fa5b35ea867389cec33a9c82fffbd459ca8958e5; ref is its parent (checked with gh api). Advisory GHSA-f26w-gh5m-qq77. PoC dir: internal/rtpbuffer. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 2b2c61732a90a01c7be25d08990a6c8600776630. Every file and function named in report.md checked at ref with gh api contents + grep. PoC is the 'overflow padding' subtest of TestRTPBuffer_Padding in the fix commit."
+}

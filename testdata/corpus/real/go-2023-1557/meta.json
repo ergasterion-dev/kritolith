@@ -1,0 +1,7 @@
+{
+  "repo": "ipfs/go-unixfs",
+  "ref": "6609090f4bd166547fcaf5242055ede5c14f8f41",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2023-1557",
+  "notes": "Fix commit 467d139a640ecee4f2e74643dafcc58bb3b54175; ref is its parent (checked with gh api). Advisory GHSA-q264-w97q-q778. PoC dir: hamt. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD a7243ebfc36eaa89d79a39d3cef3fa1e60f7e49e. Every file and function named in report.md checked at ref with gh api contents + grep. Fix commit is a merge; ref is its first parent. The fix commit's own hamt_test.go fails go vet under Go 1.26 (t.Error with %d), so the PoC was checked at the fix commit with -vet=off; at default-branch HEAD it runs with vet on."
+}

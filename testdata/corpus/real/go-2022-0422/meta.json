@@ -1,0 +1,7 @@
+{
+  "repo": "ipld/go-codec-dagpb",
+  "ref": "fa6d623cbc0da39a4940da01d7506d05df80c7ad",
+  "expected_outcome": "REPRODUCED_FIXED_AT_HEAD",
+  "source": "GO-2022-0422",
+  "notes": "Fix commit a17ace35cc760a2698645c09868f9050fa219f57; ref is its parent (checked with gh api). Advisory GHSA-g3vv-g2j5-45f2. PoC dir: repo root. Verified 2026-09-23 by running the PoC: fails at ref, passes at the fix commit and at default-branch HEAD 7f9e1ff8c1f2b45d7f59d70d56898ea8328b2d97. Every file and function named in report.md checked at ref with gh api contents + grep. Advisory GHSA-967g-cjx4-h7j6 is a withdrawn duplicate of GHSA-g3vv-g2j5-45f2. Bytes are the 'Links Hash some, short' case added to compat_test.go by the fix."
+}
