@@ -23,6 +23,7 @@ var (
 	versionRe       = regexp.MustCompile(`\bv[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?\b`)
 	shaRe           = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	fenceRe         = regexp.MustCompile("(?s)```[A-Za-z0-9_+-]*\\n(.*?)```")
+	reproduceHdrRe  = regexp.MustCompile(`(?m)^##\s+Reproduce\b`)
 )
 
 // domainLikeSuffixes are segments after the last dot in a dotRe match
@@ -48,13 +49,16 @@ var vulnKeywords = []struct{ phrase, class string }{
 	{"use after free", "memory-safety"},
 	{"out of bounds", "memory-safety"},
 	{"nil pointer dereference", "crash"},
+	{"panic", "crash"},
 	{"path traversal", "path-traversal"},
 	{"directory traversal", "path-traversal"},
 	{"denial of service", "dos"},
 	{"resource exhaustion", "dos"},
 	{"infinite loop", "dos"},
+	{"endless loop", "dos"},
 	{"authentication bypass", "auth-bypass"},
 	{"privilege escalation", "auth-bypass"},
+	{"cors allow-list", "access-control-bypass"},
 }
 
 // Extract parses body for concrete, checkable claims. It never panics
@@ -66,7 +70,7 @@ func Extract(body string) []report.Claim {
 	claims = append(claims, lineClaims(prose)...)
 	claims = append(claims, funcClaims(prose)...)
 	claims = append(claims, versionAndSHAClaims(prose)...)
-	claims = append(claims, vulnClassClaims(prose)...)
+	claims = append(claims, vulnClassClaims(stripReproduceSection(prose))...)
 	return dedupe(claims)
 }
 
@@ -180,6 +184,23 @@ func funcClaims(body string) []report.Claim {
 		out = append(out, newClaim(report.ClaimFunction, ident))
 	}
 	return out
+}
+
+// stripReproduceSection removes a "## Reproduce" heading and everything
+// after it, so vuln-class keyword matching only sees the vulnerability
+// description, not the procedural PoC-running instructions. This
+// project's own report convention (see the architecture doc) puts a
+// boilerplate sentence in that section — "It fails (or panics) on the
+// affected code and passes once the issue is fixed" — that mentions
+// "panics" regardless of the actual vuln class; scanning it would tag
+// unrelated reports (SQL injection, path traversal, a CORS bypass, ...)
+// with a spurious "crash" claim. Reports with no such heading are
+// returned unchanged.
+func stripReproduceSection(body string) string {
+	if loc := reproduceHdrRe.FindStringIndex(body); loc != nil {
+		return body[:loc[0]]
+	}
+	return body
 }
 
 func vulnClassClaims(body string) []report.Claim {

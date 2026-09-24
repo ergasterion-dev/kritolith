@@ -67,6 +67,54 @@ func TestExtractVulnClass(t *testing.T) {
 	}
 }
 
+func TestExtractVulnClassPanicCrash(t *testing.T) {
+	body := "Feeding it malformed input makes the decoder panic instead of returning an error."
+	claims := Extract(body)
+	if !hasClaim(claims, report.ClaimVulnClass, "crash") {
+		t.Errorf("missing vuln class claim for panic wording: %+v", claims)
+	}
+}
+
+func TestExtractVulnClassDosSynonyms(t *testing.T) {
+	for _, body := range []string{
+		"This causes an infinite loop that pins a goroutine at 100% CPU.",
+		"The parser gets stuck in an endless loop on this input.",
+	} {
+		claims := Extract(body)
+		if !hasClaim(claims, report.ClaimVulnClass, "dos") {
+			t.Errorf("body %q: missing dos vuln class claim: %+v", body, claims)
+		}
+	}
+}
+
+func TestExtractVulnClassCORSAllowList(t *testing.T) {
+	body := "The CORS allow-list bypass lets an attacker read cross-origin responses."
+	claims := Extract(body)
+	if !hasClaim(claims, report.ClaimVulnClass, "access-control-bypass") {
+		t.Errorf("missing vuln class claim for CORS allow-list bypass: %+v", claims)
+	}
+}
+
+// TestExtractVulnClassIgnoresReproduceSection guards the fix for the
+// Week 4 corpus gap: a report's "## Reproduce" section carries this
+// project's own boilerplate ("It fails (or panics) on the affected
+// code..."), unrelated to the report's actual vulnerability class.
+// Scanning it would tag an unrelated report (here: a path traversal)
+// with a spurious "crash" claim just because it also panics in its
+// PoC-running instructions.
+func TestExtractVulnClassIgnoresReproduceSection(t *testing.T) {
+	body := "This is a classic path traversal in the file handler.\n\n" +
+		"## Reproduce\n\nRun the PoC. It fails (or panics) on the affected code " +
+		"and passes once the issue is fixed."
+	claims := Extract(body)
+	if hasClaim(claims, report.ClaimVulnClass, "crash") {
+		t.Errorf("vuln class wrongly derived from the Reproduce section's boilerplate: %+v", claims)
+	}
+	if !hasClaim(claims, report.ClaimVulnClass, "path-traversal") {
+		t.Errorf("missing the real vuln class claim: %+v", claims)
+	}
+}
+
 func TestExtractDedupes(t *testing.T) {
 	body := "See internal/hpack/decode.go and again internal/hpack/decode.go."
 	claims := Extract(body)
