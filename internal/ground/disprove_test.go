@@ -95,7 +95,7 @@ import nethttp "net/http"
 
 var _ = nethttp.StatusOK
 `,
-	"net/http/client.go": `package http
+	"stdhttp/client.go": `package http
 
 import "net/http"
 
@@ -277,4 +277,177 @@ func TestGroundFunctionClaimUnparseableFile(t *testing.T) {
 			t.Errorf("%s: Verified = %s, want %s; evidence: %s", tt.value, grounded[i].Verified, tt.want, grounded[i].Evidence)
 		}
 	}
+}
+
+// gitIn runs git in dir, failing the test on error.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func groundValues(t *testing.T, files map[string]string, kind report.ClaimKind, values []string, setup func(origin string) string) []report.Claim {
+	t.Helper()
+	origin, commit := newOriginWithFiles(t, files)
+	if setup != nil {
+		commit = setup(origin)
+	}
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims []report.Claim
+	for _, v := range values {
+		claims = append(claims, report.Claim{Kind: kind, Value: v, Verified: report.TriUnknown})
+	}
+	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
+	grounded, resolved, _, err := groundClaims(context.Background(), m, r, claims)
+	if err != nil || !resolved {
+		t.Fatalf("groundClaims: resolved=%v err=%v", resolved, err)
+	}
+	return grounded
+}
+
+func withFiles(extra map[string]string) map[string]string {
+	files := map[string]string{}
+	for k, v := range disproveFixture {
+		files[k] = v
+	}
+	for k, v := range extra {
+		files[k] = v
+	}
+	return files
+}
+
+func checkVerified(t *testing.T, grounded []report.Claim, want map[string]report.Tri) {
+	t.Helper()
+	for _, c := range grounded {
+		if w, ok := want[c.Value]; ok && c.Verified != w {
+			t.Errorf("%s: Verified = %s, want %s; evidence: %s", c.Value, c.Verified, w, c.Evidence)
+		}
+	}
+}
+
+// Review fix #1: a name used only in a string literal, a struct tag,
+// or a non-Go file is real, so it must not be disproved.
+func TestGroundFunctionClaimNameOnlyInNonIdentifierText(t *testing.T) {
+	files := withFiles(map[string]string{
+		"web/config.go":     "package web\n\ntype Config struct {\n\tAllow bool `json:\"allowPrivileged\" yaml:\"readTimeout\"`\n}\n\nconst sink = \"el.innerHTML = x\"\n",
+		"web/static/app.js": "window.location = params.redirectUrl;\nel.innerHTML = msg;\n",
+	})
+	grounded := groundValues(t, files, report.ClaimFunction,
+		[]string{"allowPrivileged", "readTimeout", "innerHTML", "redirectUrl", "lexInlineTableDeep"}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"allowPrivileged":    report.TriUnknown,
+		"readTimeout":        report.TriUnknown,
+		"innerHTML":          report.TriUnknown,
+		"redirectUrl":        report.TriUnknown,
+		"lexInlineTableDeep": report.TriNo, // genuinely absent from all tracked text
+	})
+}
+
+// Review fix #1: ContainsWord must report a git failure as an error,
+// never as "not found".
+func TestContainsWordErrorIsNotAbsence(t *testing.T) {
+	origin, commit := newOriginWithFiles(t, disproveFixture)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := m.ContainsWord(ctx, commit, "ReadFrame"); err != nil || !found {
+		t.Errorf("ContainsWord(ReadFrame) = %v, %v, want true, nil", found, err)
+	}
+	if found, err := m.ContainsWord(ctx, commit, "ReadFrameX"); err != nil || found {
+		t.Errorf("ContainsWord(ReadFrameX) = %v, %v, want false, nil", found, err)
+	}
+	if found, err := m.ContainsWord(ctx, strings.Repeat("0", 40), "anything"); err == nil {
+		t.Errorf("ContainsWord at a missing commit = %v, nil, want an error", found)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if found, err := m.ContainsWord(cancelled, commit, "anything"); err == nil {
+		t.Errorf("ContainsWord with a cancelled context = %v, nil, want an error", found)
+	}
+}
+
+// Review fix #2: keywords and predeclared identifiers are never
+// "absent", even though go/scanner never reports keywords as
+// identifiers.
+func TestGroundFunctionClaimKeywordsAndPredeclared(t *testing.T) {
+	values := []string{"recover", "defer", "error", "min", "clear", "go", "iota", "nil"}
+	grounded := groundValues(t, disproveFixture, report.ClaimFunction, values, nil)
+	want := map[string]report.Tri{}
+	for _, v := range values {
+		want[v] = report.TriUnknown
+	}
+	checkVerified(t, grounded, want)
+}
+
+// Review fix #3: an unaliased import whose package name differs from
+// its last path element ("github.com/foo/go-yaml" is package yaml)
+// must still count as an out-of-module binding for "yaml.x".
+func TestGroundFunctionClaimDifferentlyNamedImport(t *testing.T) {
+	files := withFiles(map[string]string{
+		"yaml/yaml.go":   "package yaml\n\nfunc Local() {}\n",
+		"render/emit.go": "package render\n\nimport \"github.com/foo/go-yaml\"\n\nvar _ = yaml.Marshal\n",
+	})
+	grounded := groundValues(t, files, report.ClaimFunction,
+		[]string{"yaml.unmarshalNode", "http2.parseHeader"}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"yaml.unmarshalNode": report.TriUnknown,
+		"http2.parseHeader":  report.TriNo, // unchanged: repo package, bound exactly, name absent
+	})
+}
+
+// Review fix #4: a submodule's contents are invisible to ls-tree, so
+// the scan is incomplete and nothing may be disproved.
+func TestGroundClaimsSubmoduleMakesScanIncomplete(t *testing.T) {
+	setup := func(origin string) string {
+		gitIn(t, origin, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("a", 40)+",third_party/lib")
+		gitIn(t, origin, "commit", "-q", "-m", "add submodule")
+		return gitIn(t, origin, "rev-parse", "HEAD")
+	}
+	grounded := groundValues(t, disproveFixture, report.ClaimFunction,
+		[]string{"lexInlineTableDeep", "(*Framer).ReadContinuationUnsafe", "http2.parseHeader", "(*Framer).ReadFrame"}, setup)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"lexInlineTableDeep":               report.TriUnknown,
+		"(*Framer).ReadContinuationUnsafe": report.TriUnknown,
+		"http2.parseHeader":                report.TriUnknown,
+		"(*Framer).ReadFrame":              report.TriYes,
+	})
+	files := groundValues(t, disproveFixture, report.ClaimFile, []string{"http2/missing.go", "missing.go"}, setup)
+	checkVerified(t, files, map[string]report.Tri{"http2/missing.go": report.TriUnknown, "missing.go": report.TriUnknown})
+}
+
+// Review fix #5: a file path whose directory doesn't exist in the
+// repository (a stdlib path, or a module-cache path from a stack trace)
+// isn't a claim about this repository's layout.
+func TestGroundFileClaimExternalLookingPaths(t *testing.T) {
+	grounded := groundValues(t, disproveFixture, report.ClaimFile, []string{
+		"net/http/server.go",    // stdlib file mentioned in prose
+		"v1.0.0/baz/qux.go",     // extracted from /root/go/pkg/mod/github.com/foo/bar@v1.0.0/baz/qux.go:123
+		"http2/missing.go",      // real directory, invented file
+		"repo/http2/missing.go", // directory matches as a suffix... of nothing: "repo/http2" isn't a dir
+		"missing.go",            // bare filename
+		"http2/frame.go",        // exact
+		"frame.go",              // suffix of a real file
+	}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"net/http/server.go":    report.TriUnknown,
+		"v1.0.0/baz/qux.go":     report.TriUnknown,
+		"http2/missing.go":      report.TriNo,
+		"repo/http2/missing.go": report.TriUnknown,
+		"missing.go":            report.TriNo,
+		"http2/frame.go":        report.TriYes,
+		"frame.go":              report.TriUnknown,
+	})
 }

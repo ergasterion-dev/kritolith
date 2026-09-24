@@ -3,6 +3,9 @@ package ground
 import (
 	"context"
 	"fmt"
+	"go/token"
+	"go/types"
+	"path"
 	"strconv"
 	"strings"
 	"unicode"
@@ -50,7 +53,7 @@ func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []repo
 		case report.ClaimFile:
 			groundFileClaim(ctx, m, commit, &out[i], idx)
 		case report.ClaimFunction:
-			groundFunctionClaim(&out[i], idx.get())
+			groundFunctionClaim(&out[i], idx)
 		case report.ClaimLine:
 			groundLineClaim(ctx, m, commit, &out[i], idx.get().decls)
 		}
@@ -72,8 +75,16 @@ type symbolIndex struct {
 	// module is the root go.mod's module path, or "" if there isn't
 	// one (then every import counts as possibly external).
 	module string
+	// dirs holds every directory (and ancestor directory) containing
+	// a listed Go file.
+	dirs map[string]bool
+	// unbound holds identifiers some file uses as the "x" of an "x.Y"
+	// selector without an import binding x exactly (see
+	// fileSymbols.unboundQualifiers).
+	unbound map[string]bool
 	// listed is true when files is the repository's full list of Go
-	// files (the listing worked and wasn't truncated).
+	// files (the listing worked, wasn't truncated, and the tree has no
+	// submodules, whose contents ls-tree can't see).
 	listed bool
 	// unparsed counts files go/parser rejected. Their identifiers are
 	// still in idents, but their package clause, types, and imports
@@ -91,6 +102,25 @@ type lazyIndex struct {
 	m      *Mirror
 	commit string
 	idx    *symbolIndex
+	words  map[string]wordResult // ContainsWord results, by name
+}
+
+type wordResult struct {
+	found bool
+	err   error
+}
+
+// containsWord caches Mirror.ContainsWord per name for this commit.
+func (l *lazyIndex) containsWord(name string) (bool, error) {
+	if r, ok := l.words[name]; ok {
+		return r.found, r.err
+	}
+	found, err := l.m.ContainsWord(l.ctx, l.commit, name)
+	if l.words == nil {
+		l.words = map[string]wordResult{}
+	}
+	l.words[name] = wordResult{found: found, err: err}
+	return found, err
 }
 
 func newLazyIndex(ctx context.Context, m *Mirror, commit string) *lazyIndex {
@@ -108,23 +138,34 @@ func (l *lazyIndex) get() *symbolIndex {
 		idents:  map[string]struct{}{},
 		pkgs:    map[string]bool{},
 		imports: map[string][]string{},
+		dirs:    map[string]bool{},
+		unbound: map[string]bool{},
 	}
 	l.idx = idx
 	if gomod, ok, err := l.m.ReadFile(l.ctx, l.commit, "go.mod"); err == nil && ok {
 		idx.module = modulePath(gomod)
 	}
-	files, err := l.m.ListGoFiles(l.ctx, l.commit)
+	files, gitlinks, err := l.m.ListGoFiles(l.ctx, l.commit)
 	if err != nil {
 		idx.incomplete = "could not list the repository's Go files"
 		return idx
 	}
 	idx.listed = true
+	if gitlinks > 0 {
+		idx.listed = false
+		idx.incomplete = fmt.Sprintf("repository has %d git submodule(s) whose contents weren't scanned", gitlinks)
+	}
 	if len(files) > maxGoFiles {
 		files = files[:maxGoFiles]
 		idx.listed = false
 		idx.incomplete = fmt.Sprintf("repository has more than %d Go files; only the first %d were scanned", maxGoFiles, maxGoFiles)
 	}
 	idx.files = files
+	for _, f := range files {
+		for d := path.Dir(f); d != "." && d != "/" && !idx.dirs[d]; d = path.Dir(d) {
+			idx.dirs[d] = true
+		}
+	}
 	for _, f := range files {
 		content, ok, err := l.m.ReadFile(l.ctx, l.commit, f)
 		if err != nil || !ok {
@@ -140,7 +181,12 @@ func (l *lazyIndex) get() *symbolIndex {
 			idx.pkgs[fs.pkg] = true
 		}
 		for _, im := range fs.imports {
-			idx.imports[im.name] = append(idx.imports[im.name], im.path)
+			for _, name := range im.names {
+				idx.imports[name] = append(idx.imports[name], im.path)
+			}
+		}
+		for _, q := range fs.unboundQualifiers {
+			idx.unbound[q] = true
 		}
 		idx.decls = append(idx.decls, fs.decls...)
 		for _, t := range fs.types {
@@ -151,6 +197,20 @@ func (l *lazyIndex) get() *symbolIndex {
 		scanIdentifiers(content, idx.idents)
 	}
 	return idx
+}
+
+// hasDirSuffix reports whether some directory in the tree is dir or
+// ends with "/"+dir.
+func (idx *symbolIndex) hasDirSuffix(dir string) bool {
+	if idx.dirs[dir] {
+		return true
+	}
+	for d := range idx.dirs {
+		if strings.HasSuffix(d, "/"+dir) {
+			return true
+		}
+	}
+	return false
 }
 
 func (idx *symbolIndex) hasIdent(name string) bool {
@@ -186,10 +246,14 @@ func modulePath(gomod []byte) string {
 }
 
 // groundFileClaim checks a file claim at its exact path. A miss is
-// only Verified: no if no file in the tree has the claimed path as a
-// path suffix: reporters often cite a path relative to the package
-// directory ("frame.go" for "http2/frame.go"), and that's a real file,
-// not an invented one.
+// only Verified: no if the whole tree was listed, no file in it has the
+// claimed path as a path suffix (reporters often cite a path relative
+// to the package directory: "frame.go" for "http2/frame.go"), and the
+// claim is either a bare filename or its directory exists somewhere in
+// the tree. A multi-component path whose directory doesn't exist here
+// ("net/http/server.go", or "v1.0.0/baz/qux.go" pulled out of a
+// module-cache stack trace) is more likely a stdlib or dependency file
+// mentioned in prose than a claim about this repository's layout.
 func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Claim, l *lazyIndex) {
 	ok, err := m.FileExists(ctx, commit, c.Value)
 	short := shortSHA(commit)
@@ -214,6 +278,11 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 		c.Evidence = fmt.Sprintf("not found at that exact path at %s; %s, so other locations weren't all checked", short, idx.incomplete)
 		return
 	}
+	if dir := path.Dir(c.Value); dir != "." && !idx.hasDirSuffix(dir) {
+		c.Verified = report.TriUnknown
+		c.Evidence = fmt.Sprintf("not found at %s, and no directory %s exists in the repository, so it may be a standard library or dependency path", short, report.Printable(dir))
+		return
+	}
 	c.Verified = report.TriNo
 	c.Evidence = fmt.Sprintf("not found at %s", short)
 }
@@ -224,7 +293,8 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 // unknown, with evidence saying why: GROUNDING_FAILED fires on
 // Verified: no, and a false GROUNDING_FAILED on a real report is the
 // worst bug this project can have.
-func groundFunctionClaim(c *report.Claim, idx *symbolIndex) {
+func groundFunctionClaim(c *report.Claim, l *lazyIndex) {
+	idx := l.get()
 	if d := findDeclaration(idx.decls, c.Value); d != nil {
 		c.Verified = report.TriYes
 		c.Evidence = fmt.Sprintf("declared at %s:%d", report.Printable(d.file), d.line)
@@ -237,6 +307,21 @@ func groundFunctionClaim(c *report.Claim, idx *symbolIndex) {
 	if ok, why := idx.disproves(c.Value); !ok {
 		c.Verified = report.TriUnknown
 		c.Evidence = "no matching function or method declaration in the repository, but " + why + closest
+		return
+	}
+	// Last check: the name must be absent from all tracked text, not
+	// just Go identifiers — a name used only in a string literal, a
+	// struct tag, a template, or a JS/config file is real.
+	_, name := splitFunctionClaim(strings.TrimSpace(c.Value))
+	found, err := l.containsWord(name)
+	switch {
+	case err != nil:
+		c.Verified = report.TriUnknown
+		c.Evidence = "no matching function or method declaration in the repository, but searching the repository's text failed, so absence isn't proven" + closest
+		return
+	case found:
+		c.Verified = report.TriUnknown
+		c.Evidence = fmt.Sprintf("no matching function or method declaration in the repository, but %s appears in the repository's tracked text (a string, struct tag, or non-Go file), so its absence as a declared function isn't proof", report.Printable(name)) + closest
 		return
 	}
 	c.Verified = report.TriNo
@@ -276,8 +361,11 @@ func (idx *symbolIndex) disproves(value string) (bool, string) {
 	}
 	value = strings.TrimSpace(value)
 	recv, name := splitFunctionClaim(value)
-	if name == "" || !isIdent(name) {
+	if name == "" || !isGoIdent(name) {
 		return false, "the claim isn't a plain Go identifier"
+	}
+	if token.IsKeyword(name) || types.Universe.Lookup(name) != nil {
+		return false, fmt.Sprintf("%s is a Go keyword or predeclared identifier", report.Printable(name))
 	}
 	if idx.hasIdent(name) {
 		return false, fmt.Sprintf("%s appears in the repository source (as a field, type, variable, local, or call), so its absence as a declared function isn't proof", report.Printable(name))
@@ -301,6 +389,9 @@ func (idx *symbolIndex) disproves(value string) (bool, string) {
 		case !idx.pkgs[recv]:
 			return false, fmt.Sprintf("no package %s is declared in the repository (it may be an imported package, a field, or a variable)", report.Printable(recv))
 		}
+		if idx.unbound[recv] {
+			return false, fmt.Sprintf("some file uses %s.X without an import that certainly binds %s (it may be a differently-named import or a variable)", report.Printable(recv), report.Printable(recv))
+		}
 		if ext := idx.externalImport(recv); ext != "" {
 			return false, fmt.Sprintf("%s is also the name of imported package %s", report.Printable(recv), report.Printable(ext))
 		}
@@ -310,15 +401,6 @@ func (idx *symbolIndex) disproves(value string) (bool, string) {
 	default:
 		return true, ""
 	}
-}
-
-func isIdent(s string) bool {
-	for i, r := range s {
-		if !(r == '_' || unicode.IsLetter(r) || (i > 0 && unicode.IsDigit(r))) {
-			return false
-		}
-	}
-	return s != ""
 }
 
 func isExported(name string) bool {

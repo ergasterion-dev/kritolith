@@ -3,6 +3,7 @@ package ground
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -183,19 +184,59 @@ func (m *Mirror) ReadFile(ctx context.Context, commit, path string) ([]byte, boo
 }
 
 // ListGoFiles returns every ".go" file path at commit, via one
-// `git ls-tree`, filtered client-side.
-func (m *Mirror) ListGoFiles(ctx context.Context, commit string) ([]string, error) {
-	out, err := m.runGit(ctx, m.path, "ls-tree", "-r", "--name-only", commit)
+// `git ls-tree -r -z`, filtered client-side, plus the number of
+// submodule (gitlink, mode 160000) entries in the tree. ls-tree never
+// recurses into a submodule, so any Go code inside one is invisible to
+// grounding; callers must treat a non-zero gitlinks as an incomplete
+// view of the source.
+func (m *Mirror) ListGoFiles(ctx context.Context, commit string) (files []string, gitlinks int, err error) {
+	out, err := m.runGit(ctx, m.path, "ls-tree", "-r", "-z", commit)
 	if err != nil {
-		return nil, fmt.Errorf("ground: list files at %s: %w", commit, err)
+		return nil, 0, fmt.Errorf("ground: list files at %s: %w", commit, err)
 	}
-	var files []string
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if line != "" && strings.HasSuffix(line, ".go") {
-			files = append(files, line)
+	for _, entry := range strings.Split(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		// "<mode> SP <type> SP <object> TAB <path>"
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok {
+			return nil, 0, fmt.Errorf("ground: list files at %s: malformed ls-tree entry", commit)
+		}
+		mode, _, _ := strings.Cut(meta, " ")
+		if mode == "160000" {
+			gitlinks++
+			continue
+		}
+		if strings.HasSuffix(path, ".go") {
+			files = append(files, path)
 		}
 	}
-	return files, nil
+	return files, gitlinks, nil
+}
+
+// ContainsWord reports whether name occurs as a whole word anywhere in
+// the tracked content at commit — every file, Go or not, including
+// string literals, struct tags, templates, and scripts — via
+// `git grep -q -w -F`. found is true on git grep's exit 0 and false
+// only on its exit 1 ("no match"). Any other outcome is returned as an
+// error, never as "not found": callers use a false result as part of
+// proving a claim false, so a git failure must not be able to
+// masquerade as absence.
+func (m *Mirror) ContainsWord(ctx context.Context, commit, name string) (found bool, err error) {
+	cmd := exec.CommandContext(ctx, "git", "grep", "-q", "-w", "-F", "-e", name, commit, "--")
+	cmd.Dir = m.path
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	if runErr == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 && errBuf.Len() == 0 {
+		return false, nil
+	}
+	return false, fmt.Errorf("ground: git grep at %s: %w: %s", commit, runErr, strings.TrimSpace(errBuf.String()))
 }
 
 // ValidateClaimPath rejects any path with a "." or ".." component (or

@@ -187,8 +187,8 @@ type Fn func()
 		t.Fatalf("imports = %+v, want %d", fs.imports, len(wantImports))
 	}
 	for _, im := range fs.imports {
-		if wantImports[im.name] != im.path {
-			t.Errorf("import %q -> %q, want %q", im.name, im.path, wantImports[im.name])
+		if !contains(im.names, wantImportName(wantImports, im.path)) {
+			t.Errorf("import %q names = %v, want them to include its binding", im.path, im.names)
 		}
 	}
 	wantOpen := map[string]bool{
@@ -205,17 +205,72 @@ type Fn func()
 	}
 }
 
-func TestImportName(t *testing.T) {
+func wantImportName(want map[string]string, path string) string {
+	for name, p := range want {
+		if p == path {
+			return name
+		}
+	}
+	return ""
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func TestImportNameCandidates(t *testing.T) {
 	tests := map[string]string{
 		"strings": "strings",
 		"google.golang.org/protobuf/encoding/protowire": "protowire",
 		"github.com/golang-jwt/jwt/v5":                  "jwt",
 		"gopkg.in/yaml.v3":                              "yaml",
+		"github.com/foo/go-yaml":                        "yaml", // reviewer probe: real package name is yaml
+		"github.com/foo/yaml-go":                        "yaml",
+		"github.com/foo/yaml.go":                        "yaml",
 		"github.com/foo/go-bar":                         "go_bar",
+		"github.com/mattn/go-sqlite3":                   "sqlite3",
 	}
 	for path, want := range tests {
-		if got := importName(path); got != want {
-			t.Errorf("importName(%q) = %q, want %q", path, got, want)
+		if got := importNameCandidates(path); !contains(got, want) {
+			t.Errorf("importNameCandidates(%q) = %v, want it to include %q", path, got, want)
+		}
+	}
+}
+
+func TestParseDeclarationsUnboundQualifiers(t *testing.T) {
+	src := []byte(`package p
+
+import (
+	"github.com/foo/go-yaml"
+	j "encoding/json"
+	"strings"
+)
+
+func f(parser *P) {
+	_ = yaml.Marshal
+	_ = j.Marshal
+	_ = strings.ToLower
+	_ = parser.error
+}
+`)
+	fs := parseDeclarations("p.go", src)
+	got := map[string]bool{}
+	for _, q := range fs.unboundQualifiers {
+		got[q] = true
+	}
+	for _, want := range []string{"yaml", "parser"} {
+		if !got[want] {
+			t.Errorf("unboundQualifiers = %v, want %q (no import certainly binds it)", fs.unboundQualifiers, want)
+		}
+	}
+	for _, not := range []string{"j", "strings"} {
+		if got[not] {
+			t.Errorf("unboundQualifiers = %v, don't want %q (an import binds it exactly)", fs.unboundQualifiers, not)
 		}
 	}
 }

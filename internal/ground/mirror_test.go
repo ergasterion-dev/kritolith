@@ -255,9 +255,9 @@ func TestListGoFiles(t *testing.T) {
 	if _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
 		t.Fatal(err)
 	}
-	files, err := m.ListGoFiles(ctx, commit)
-	if err != nil || len(files) != 1 || files[0] != "a.go" {
-		t.Fatalf("ListGoFiles = %v, %v, want [a.go], nil", files, err)
+	files, gitlinks, err := m.ListGoFiles(ctx, commit)
+	if err != nil || len(files) != 1 || files[0] != "a.go" || gitlinks != 0 {
+		t.Fatalf("ListGoFiles = %v, %d, %v, want [a.go], 0, nil", files, gitlinks, err)
 	}
 }
 

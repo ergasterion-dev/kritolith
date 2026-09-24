@@ -161,6 +161,24 @@ Per-kind behavior:
   A `file` claim missing at its exact path is `unknown`, not `no`, if
   some file in the tree has that path as a suffix (`frame.go` for
   `http2/frame.go`).
+
+  **Review round 1 additions.** A claim that passes every rule above is
+  still only `no` if (1) its name is not a Go keyword or predeclared
+  identifier (`token.IsKeyword`, `types.Universe`) and (2) the name is
+  absent as a whole word from *all* tracked text at the commit
+  (`git grep -q -w -F`: exit 1 is the only "absent"; any other result
+  is treated as "can't prove"), so names that live only in string
+  literals, struct tags, templates or JS files aren't disproved.
+  `pkg.name` also stays `unknown` if any file uses `pkg.X` without an
+  import that certainly binds `pkg` (an unaliased import whose last
+  path element isn't exactly `pkg`, or a variable), and unaliased
+  imports register every plausible package-name variant
+  (`go-yaml` → `yaml`). A tree containing a submodule (gitlink, mode
+  160000) counts as an incomplete scan. A missing `file` claim with a
+  directory component is `unknown` unless that directory exists in the
+  tree (`net/http/server.go`, module-cache stack-trace paths). Known
+  accepted residual: a repo's own closed type sharing a name with
+  another package's type (`(*Server).ServeTLS`).
 - **`line`** (soft): checked when the claim's file exists and the
   parsed file's line count covers it; if a same-report `function`
   claim's declaration position is known, also checks the line falls

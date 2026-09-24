@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // declaration is one top-level function or method declaration found
@@ -29,14 +30,21 @@ type fileSymbols struct {
 	pkg     string        // package clause name
 	decls   []declaration // top-level funcs and methods
 	types   []typeDecl    // top-level types
-	imports []importRef   // every import, with the local name it binds
+	imports []importRef   // every import, with the local name(s) it may bind
+	// unboundQualifiers are identifiers used as "x" in an "x.Y"
+	// selector in this file that no import in the file is known to
+	// bind exactly: a variable or field, or an import whose package
+	// name differs from its path ("github.com/foo/go-yaml" used as
+	// "yaml"). Either way "x.Y" there may not mean a repo package x.
+	unboundQualifiers []string
 }
 
-// importRef is one import spec: the name it binds in the file and the
-// import path.
+// importRef is one import spec: the local names it may bind in the
+// file (exactly one for an aliased import, several plausible guesses
+// for an unaliased one) and the import path.
 type importRef struct {
-	name string
-	path string
+	names []string
+	path  string
 }
 
 // parseDeclarations parses one Go source file's content and returns
@@ -55,17 +63,34 @@ func parseDeclarations(file string, content []byte) fileSymbols {
 		return fileSymbols{}
 	}
 	out := fileSymbols{pkg: f.Name.Name}
+	exact := map[string]bool{} // local names this file's imports certainly bind
 	for _, is := range f.Imports {
 		path, err := strconv.Unquote(is.Path.Value)
 		if err != nil {
 			continue
 		}
-		name := importName(path)
 		if is.Name != nil {
-			name = is.Name.Name
+			out.imports = append(out.imports, importRef{names: []string{is.Name.Name}, path: path})
+			exact[is.Name.Name] = true
+			continue
 		}
-		out.imports = append(out.imports, importRef{name: name, path: path})
+		out.imports = append(out.imports, importRef{names: importNameCandidates(path), path: path})
+		if last := lastPathElem(path); isGoIdent(last) {
+			exact[last] = true
+		}
 	}
+	seen := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		se, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := se.X.(*ast.Ident); ok && !exact[id.Name] && !seen[id.Name] {
+			seen[id.Name] = true
+			out.unboundQualifiers = append(out.unboundQualifiers, id.Name)
+		}
+		return true
+	})
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *ast.FuncDecl:
@@ -95,22 +120,66 @@ func parseDeclarations(file string, content []byte) fileSymbols {
 	return out
 }
 
-// importName guesses the package name an unnamed import binds, the
-// way Go tooling conventionally does without loading the package: the
-// last path element, skipping a trailing "/vN" major-version element
-// and stripping a gopkg.in-style ".vN" suffix. A wrong guess only
-// matters for disproving "pkg.name" claims, and it errs toward
-// treating a name as possibly external.
-func importName(path string) string {
+// lastPathElem returns an import path's last element, skipping a
+// trailing "/vN" major-version element.
+func lastPathElem(path string) string {
 	elems := strings.Split(path, "/")
 	last := elems[len(elems)-1]
 	if len(elems) > 1 && isMajorVersion(last) {
 		last = elems[len(elems)-2]
 	}
-	if i := strings.LastIndex(last, ".v"); i > 0 && isMajorVersion(last[i+1:]) {
-		last = last[:i]
+	return last
+}
+
+// importNameCandidates returns every package name an unaliased import
+// of path plausibly binds, without loading the package: the last path
+// element (skipping a "/vN" element), and variants of it with a
+// gopkg.in-style ".vN" suffix, a "go-"/"go_" prefix, or a
+// "-go"/"_go"/".go" suffix stripped, dashes replaced by underscores,
+// and each dash- or dot-separated piece. It deliberately
+// over-generates: these names are only used to decide that a "pkg."
+// qualifier might mean an out-of-module import, so a spurious
+// candidate can only stop grounding from calling a claim false. (A
+// package whose name matches none of these is still caught by
+// fileSymbols.unboundQualifiers when a file uses it.)
+func importNameCandidates(path string) []string {
+	last := lastPathElem(path)
+	set := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s != "" && !set[s] {
+			set[s] = true
+			out = append(out, s)
+		}
 	}
-	return strings.ReplaceAll(last, "-", "_")
+	bases := []string{last}
+	if i := strings.LastIndex(last, ".v"); i > 0 && isMajorVersion(last[i+1:]) {
+		bases = append(bases, last[:i])
+	}
+	for _, b := range bases {
+		for _, v := range []string{
+			b,
+			strings.TrimPrefix(strings.TrimPrefix(b, "go-"), "go_"),
+			strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(b, "-go"), "_go"), ".go"),
+		} {
+			add(v)
+			add(strings.ReplaceAll(v, "-", "_"))
+			for _, piece := range strings.FieldsFunc(v, func(r rune) bool { return r == '-' || r == '.' }) {
+				add(piece)
+			}
+		}
+	}
+	return out
+}
+
+// isGoIdent reports whether s is a valid Go identifier.
+func isGoIdent(s string) bool {
+	for i, r := range s {
+		if !(r == '_' || unicode.IsLetter(r) || (i > 0 && unicode.IsDigit(r))) {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func isMajorVersion(s string) bool {

@@ -54,7 +54,8 @@ func TestGroundClaimsFileAndFunction(t *testing.T) {
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
 	claims := []report.Claim{
 		{Kind: report.ClaimFile, Value: "internal/http2/frame.go"},
-		{Kind: report.ClaimFile, Value: "does/not/exist.go"},
+		{Kind: report.ClaimFile, Value: "internal/http2/missing.go"}, // real directory, invented file
+		{Kind: report.ClaimFile, Value: "does/not/exist.go"},         // directory absent too: may be an external path
 		{Kind: report.ClaimFunction, Value: "http2.parseHeaders"},
 		{Kind: report.ClaimFunction, Value: "http2.parseHeader"}, // invented, close to parseHeaders
 	}
@@ -72,8 +73,11 @@ func TestGroundClaimsFileAndFunction(t *testing.T) {
 	if byValue["internal/http2/frame.go"].Verified != report.TriYes {
 		t.Errorf("existing file claim = %+v, want Verified: yes", byValue["internal/http2/frame.go"])
 	}
-	if byValue["does/not/exist.go"].Verified != report.TriNo {
-		t.Errorf("missing file claim = %+v, want Verified: no", byValue["does/not/exist.go"])
+	if byValue["internal/http2/missing.go"].Verified != report.TriNo {
+		t.Errorf("missing file claim = %+v, want Verified: no", byValue["internal/http2/missing.go"])
+	}
+	if byValue["does/not/exist.go"].Verified != report.TriUnknown {
+		t.Errorf("missing file in a missing directory = %+v, want Verified: unknown", byValue["does/not/exist.go"])
 	}
 	if byValue["http2.parseHeaders"].Verified != report.TriYes {
 		t.Errorf("existing function claim = %+v, want Verified: yes", byValue["http2.parseHeaders"])
