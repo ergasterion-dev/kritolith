@@ -60,7 +60,7 @@ func TestGroundClaimsFileAndFunction(t *testing.T) {
 		{Kind: report.ClaimFunction, Value: "http2.parseHeaders"},
 		{Kind: report.ClaimFunction, Value: "http2.parseHeader"}, // invented, close to parseHeaders
 	}
-	grounded, resolved, resolvedCommit, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, resolved, resolvedCommit, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestGroundClaimsRefDoesNotResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: "totally-unknown"}
-	grounded, resolved, _, _, err := groundClaims(context.Background(), m, r, []report.Claim{{Kind: report.ClaimFile, Value: "main.go", Verified: report.TriUnknown}})
+	grounded, resolved, _, _, _, err := groundClaims(context.Background(), m, r, []report.Claim{{Kind: report.ClaimFile, Value: "main.go", Verified: report.TriUnknown}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestGroundClaimsLineClaim(t *testing.T) {
 		{Kind: report.ClaimLine, Value: "main.go:3"},    // inside func main
 		{Kind: report.ClaimLine, Value: "main.go:9999"}, // out of range
 	}
-	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestGroundClaimsFallsBackToVersionClaims(t *testing.T) {
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: "does-not-resolve"}
 	claims := []report.Claim{{Kind: report.ClaimVersion, Value: "v2.0.0"}}
-	_, resolved, resolvedCommit, viaFallback, err := groundClaims(context.Background(), m, r, claims)
+	_, resolved, resolvedCommit, viaFallback, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestServiceGroundFallbackCapsGroundingFailed(t *testing.T) {
 	ctx := context.Background()
 
 	fb := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: strings.Repeat("f", 40)}
-	grounded, resolved, ref, viaFallback := s.Ground(ctx, fb, claims())
+	grounded, resolved, ref, viaFallback, _ := s.Ground(ctx, fb, claims())
 	if !resolved || ref != commit || !viaFallback {
 		t.Fatalf("fallback Ground = %v, %q, %v, want true, %q, true", resolved, ref, viaFallback, commit)
 	}
@@ -194,7 +194,7 @@ func TestServiceGroundFallbackCapsGroundingFailed(t *testing.T) {
 	}
 
 	direct := report.Report{ID: "R2", Repo: "owner/name", ClaimedRef: commit}
-	grounded, resolved, ref, viaFallback = s.Ground(ctx, direct, claims())
+	grounded, resolved, ref, viaFallback, _ = s.Ground(ctx, direct, claims())
 	if !resolved || viaFallback {
 		t.Fatalf("direct Ground = %v, %v, want true, false", resolved, viaFallback)
 	}
@@ -212,7 +212,7 @@ func TestGroundClaimsLeavesOtherKindsAlone(t *testing.T) {
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
 	claims := []report.Claim{{Kind: report.ClaimVulnClass, Value: "dos", Verified: report.TriUnknown}}
-	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}

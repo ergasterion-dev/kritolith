@@ -68,12 +68,13 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 	}
 	res := verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable}
 	if p.grounder != nil {
-		grounded, resolved, resolvedRef, viaFallback := p.grounder.Ground(ctx, r, claims)
+		grounded, resolved, resolvedRef, viaFallback, module := p.grounder.Ground(ctx, r, claims)
 		res.Claims = grounded
 		res.GroundingRan = true
 		res.RefResolved = resolved
 		res.ResolvedRef = resolvedRef
 		res.ResolvedViaFallback = viaFallback
+		res.Module = module
 	}
 	v := verdict.Compose(r, res)
 	if err := p.store.SaveVerdict(ctx, v); err != nil {

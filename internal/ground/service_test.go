@@ -20,7 +20,7 @@ func TestServiceGroundSuccess(t *testing.T) {
 	s.originURL = func(string) string { return origin }
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
 	claims := []report.Claim{{Kind: report.ClaimFile, Value: "main.go"}}
-	grounded, resolved, resolvedRef, _ := s.Ground(context.Background(), r, claims)
+	grounded, resolved, resolvedRef, _, _ := s.Ground(context.Background(), r, claims)
 	if !resolved || resolvedRef != commit {
 		t.Fatalf("resolved = %v, resolvedRef = %q, want true, %q", resolved, resolvedRef, commit)
 	}
@@ -34,7 +34,7 @@ func TestServiceGroundDegradesOnCloneFailure(t *testing.T) {
 	s.originURL = func(string) string { return filepath.Join(t.TempDir(), "does-not-exist") }
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: "deadbeef"}
 	claims := []report.Claim{{Kind: report.ClaimFile, Value: "a.go"}}
-	grounded, resolved, resolvedRef, _ := s.Ground(context.Background(), r, claims)
+	grounded, resolved, resolvedRef, _, _ := s.Ground(context.Background(), r, claims)
 	if resolved {
 		t.Error("want resolved = false for an unreachable origin")
 	}

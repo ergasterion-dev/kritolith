@@ -25,11 +25,12 @@ const (
 // the same claims with Verified and Evidence updated, plus whether a
 // ref resolved, which commit it resolved to, and whether that commit
 // came from a fallback version rather than the claimed ref itself (see
-// Mirror.EnsureAndResolve). An error here means
+// Mirror.EnsureAndResolve), and the resolved commit's go.mod module
+// path. An error here means
 // the mirror itself couldn't be used (clone/fetch failure); callers
 // must degrade to "not resolved" rather than propagate it as a
 // pipeline failure (see Task 5's Service).
-func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []report.Claim) (grounded []report.Claim, refResolved bool, resolvedCommit string, viaFallback bool, err error) {
+func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []report.Claim) (grounded []report.Claim, refResolved bool, resolvedCommit string, viaFallback bool, module string, err error) {
 	var versions []string
 	for _, c := range claims {
 		if c.Kind == report.ClaimVersion {
@@ -41,10 +42,10 @@ func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []repo
 	}
 	commit, resolved, viaFallback, err := m.EnsureAndResolve(ctx, r.ClaimedRef, versions)
 	if err != nil {
-		return claims, false, "", false, err
+		return claims, false, "", false, "", err
 	}
 	if !resolved {
-		return claims, false, "", false, nil
+		return claims, false, "", false, "", nil
 	}
 
 	idx := newLazyIndex(ctx, m, commit)
@@ -60,7 +61,15 @@ func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []repo
 			groundLineClaim(ctx, m, commit, &out[i], idx.get().decls)
 		}
 	}
-	return out, true, commit, viaFallback, nil
+	// Read go.mod directly here rather than through idx.get(): forcing
+	// the full lazy index (a whole-tree file listing and read) just to
+	// learn the module path would be wasteful for a report whose claims
+	// never triggered it otherwise (e.g. version/vuln_class/sink only).
+	var mod string
+	if gomod, ok, err := m.ReadFile(ctx, commit, "go.mod"); err == nil && ok {
+		mod = modulePath(gomod)
+	}
+	return out, true, commit, viaFallback, mod, nil
 }
 
 // symbolIndex is everything grounding learned from one scan of the

@@ -145,7 +145,7 @@ func TestGroundFunctionClaimsDisproveOnlyWhenProvable(t *testing.T) {
 		claims = append(claims, report.Claim{Kind: report.ClaimFunction, Value: tt.value, Verified: report.TriUnknown})
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, resolved, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, resolved, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil || !resolved {
 		t.Fatalf("groundClaims: resolved=%v err=%v", resolved, err)
 	}
@@ -170,7 +170,7 @@ func TestGroundFileClaimPathSuffix(t *testing.T) {
 		{Kind: report.ClaimFile, Value: "http2/frame.go"},  // exact
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestGroundFunctionClaimIncompleteScanNeverDisproves(t *testing.T) {
 	defer func() { maxReadBytes = old }()
 	claims := []report.Claim{{Kind: report.ClaimFunction, Value: "http2.parseHeader"}}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestComposeOnCorpusShapes(t *testing.T) {
 				claims = append(claims, report.Claim{Kind: report.ClaimFunction, Value: v, Verified: report.TriUnknown})
 			}
 			r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-			grounded, resolved, ref, _, err := groundClaims(context.Background(), m, r, claims)
+			grounded, resolved, ref, _, _, err := groundClaims(context.Background(), m, r, claims)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -269,7 +269,7 @@ func TestGroundFunctionClaimUnparseableFile(t *testing.T) {
 		claims = append(claims, report.Claim{Kind: report.ClaimFunction, Value: tt.value})
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func groundValues(t *testing.T, files map[string]string, kind report.ClaimKind, 
 		claims = append(claims, report.Claim{Kind: kind, Value: v, Verified: report.TriUnknown})
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, resolved, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, resolved, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil || !resolved {
 		t.Fatalf("groundClaims: resolved=%v err=%v", resolved, err)
 	}

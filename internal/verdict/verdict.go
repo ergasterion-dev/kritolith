@@ -40,6 +40,11 @@ type StageResults struct {
 	// resolve to an unrelated commit, so a hard-claim failure against it
 	// is never strong enough to reject the report on.
 	ResolvedViaFallback bool
+	// Module is the resolved commit's go.mod module path, populated by
+	// grounding; empty when ungrounded or the repo has no go.mod. Week
+	// 4's dedupe uses it to match a report's own code against the local
+	// OSV mirror, which is keyed by Go module path, not GitHub repo.
+	Module string
 }
 
 // Compose builds the verdict from the stage results available so far.

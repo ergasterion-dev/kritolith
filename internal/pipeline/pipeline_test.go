@@ -205,14 +205,15 @@ type fakeGrounder struct {
 	resolved    bool
 	resolvedRef string
 	viaFallback bool
+	module      string
 }
 
-func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ([]report.Claim, bool, string, bool) {
+func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ([]report.Claim, bool, string, bool, string) {
 	out := claims
 	if g.claims != nil {
 		out = g.claims
 	}
-	return out, g.resolved, g.resolvedRef, g.viaFallback
+	return out, g.resolved, g.resolvedRef, g.viaFallback, g.module
 }
 
 func TestRunGroundingFailedOutcome(t *testing.T) {

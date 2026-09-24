@@ -334,7 +334,7 @@ func TestEnsureAndResolveStaleMirrorPrefersClaimedCommitOverFallback(t *testing.
 	commit3 := commitIn(t, origin, "thing2.go", "package a\n\nfunc parseOther() {}\n")
 	r.ClaimedRef = commit3
 	claims[0].Value = "parseOther"
-	grounded, resolved, got, viaFallback, err := groundClaims(ctx, m2, r, claims)
+	grounded, resolved, got, viaFallback, _, err := groundClaims(ctx, m2, r, claims)
 	if err != nil || !resolved || got != commit3 || viaFallback {
 		t.Fatalf("groundClaims = resolved %v, commit %q, viaFallback %v, err %v; want true, %q, false, nil", resolved, got, viaFallback, err, commit3)
 	}
