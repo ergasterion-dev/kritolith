@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/store"
@@ -208,12 +209,12 @@ type fakeGrounder struct {
 	module      string
 }
 
-func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ([]report.Claim, bool, string, bool, string) {
+func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ground.GroundResult {
 	out := claims
 	if g.claims != nil {
 		out = g.claims
 	}
-	return out, g.resolved, g.resolvedRef, g.viaFallback, g.module
+	return ground.GroundResult{Claims: out, RefResolved: g.resolved, ResolvedRef: g.resolvedRef, ViaFallback: g.viaFallback, Module: g.module}
 }
 
 func TestRunGroundingFailedOutcome(t *testing.T) {

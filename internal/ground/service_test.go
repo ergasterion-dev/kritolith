@@ -20,12 +20,12 @@ func TestServiceGroundSuccess(t *testing.T) {
 	s.originURL = func(string) string { return origin }
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
 	claims := []report.Claim{{Kind: report.ClaimFile, Value: "main.go"}}
-	grounded, resolved, resolvedRef, _, _ := s.Ground(context.Background(), r, claims)
-	if !resolved || resolvedRef != commit {
-		t.Fatalf("resolved = %v, resolvedRef = %q, want true, %q", resolved, resolvedRef, commit)
+	gr := s.Ground(context.Background(), r, claims)
+	if !gr.RefResolved || gr.ResolvedRef != commit {
+		t.Fatalf("RefResolved = %v, ResolvedRef = %q, want true, %q", gr.RefResolved, gr.ResolvedRef, commit)
 	}
-	if grounded[0].Verified != report.TriYes {
-		t.Errorf("claim = %+v, want Verified: yes", grounded[0])
+	if gr.Claims[0].Verified != report.TriYes {
+		t.Errorf("claim = %+v, want Verified: yes", gr.Claims[0])
 	}
 }
 
@@ -34,15 +34,15 @@ func TestServiceGroundDegradesOnCloneFailure(t *testing.T) {
 	s.originURL = func(string) string { return filepath.Join(t.TempDir(), "does-not-exist") }
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: "deadbeef"}
 	claims := []report.Claim{{Kind: report.ClaimFile, Value: "a.go"}}
-	grounded, resolved, resolvedRef, _, _ := s.Ground(context.Background(), r, claims)
-	if resolved {
-		t.Error("want resolved = false for an unreachable origin")
+	gr := s.Ground(context.Background(), r, claims)
+	if gr.RefResolved {
+		t.Error("want RefResolved = false for an unreachable origin")
 	}
-	if resolvedRef != "" {
-		t.Errorf("resolvedRef = %q, want empty", resolvedRef)
+	if gr.ResolvedRef != "" {
+		t.Errorf("ResolvedRef = %q, want empty", gr.ResolvedRef)
 	}
-	if len(grounded) != 1 || grounded[0].Value != "a.go" {
-		t.Errorf("grounded = %+v, want the original claims returned unchanged", grounded)
+	if len(gr.Claims) != 1 || gr.Claims[0].Value != "a.go" {
+		t.Errorf("Claims = %+v, want the original claims returned unchanged", gr.Claims)
 	}
 }
 

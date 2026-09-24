@@ -79,13 +79,13 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 	}
 	res := verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable}
 	if p.grounder != nil {
-		grounded, resolved, resolvedRef, viaFallback, module := p.grounder.Ground(ctx, r, claims)
-		res.Claims = grounded
+		gr := p.grounder.Ground(ctx, r, claims)
+		res.Claims = gr.Claims
 		res.GroundingRan = true
-		res.RefResolved = resolved
-		res.ResolvedRef = resolvedRef
-		res.ResolvedViaFallback = viaFallback
-		res.Module = module
+		res.RefResolved = gr.RefResolved
+		res.ResolvedRef = gr.ResolvedRef
+		res.ResolvedViaFallback = gr.ViaFallback
+		res.Module = gr.Module
 	}
 	if p.deduper != nil {
 		matches, exactMatch := p.deduper.Dedupe(ctx, r, res.Claims, res.Module)

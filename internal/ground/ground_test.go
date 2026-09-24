@@ -181,24 +181,24 @@ func TestServiceGroundFallbackCapsGroundingFailed(t *testing.T) {
 	ctx := context.Background()
 
 	fb := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: strings.Repeat("f", 40)}
-	grounded, resolved, ref, viaFallback, _ := s.Ground(ctx, fb, claims())
-	if !resolved || ref != commit || !viaFallback {
-		t.Fatalf("fallback Ground = %v, %q, %v, want true, %q, true", resolved, ref, viaFallback, commit)
+	gr := s.Ground(ctx, fb, claims())
+	if !gr.RefResolved || gr.ResolvedRef != commit || !gr.ViaFallback {
+		t.Fatalf("fallback Ground = %v, %q, %v, want true, %q, true", gr.RefResolved, gr.ResolvedRef, gr.ViaFallback, commit)
 	}
-	if grounded[0].Verified != report.TriNo {
-		t.Fatalf("missing file at the fallback commit: Verified = %s, want no", grounded[0].Verified)
+	if gr.Claims[0].Verified != report.TriNo {
+		t.Fatalf("missing file at the fallback commit: Verified = %s, want no", gr.Claims[0].Verified)
 	}
-	v := verdict.Compose(fb, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved, ResolvedRef: ref, ResolvedViaFallback: viaFallback})
+	v := verdict.Compose(fb, verdict.StageResults{Claims: gr.Claims, GroundingRan: true, RefResolved: gr.RefResolved, ResolvedRef: gr.ResolvedRef, ResolvedViaFallback: gr.ViaFallback})
 	if v.Outcome != report.OutcomeInconclusive {
 		t.Errorf("fallback Outcome = %s, want INCONCLUSIVE", v.Outcome)
 	}
 
 	direct := report.Report{ID: "R2", Repo: "owner/name", ClaimedRef: commit}
-	grounded, resolved, ref, viaFallback, _ = s.Ground(ctx, direct, claims())
-	if !resolved || viaFallback {
-		t.Fatalf("direct Ground = %v, %v, want true, false", resolved, viaFallback)
+	gr = s.Ground(ctx, direct, claims())
+	if !gr.RefResolved || gr.ViaFallback {
+		t.Fatalf("direct Ground = %v, %v, want true, false", gr.RefResolved, gr.ViaFallback)
 	}
-	v = verdict.Compose(direct, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved, ResolvedRef: ref, ResolvedViaFallback: viaFallback})
+	v = verdict.Compose(direct, verdict.StageResults{Claims: gr.Claims, GroundingRan: true, RefResolved: gr.RefResolved, ResolvedRef: gr.ResolvedRef, ResolvedViaFallback: gr.ViaFallback})
 	if v.Outcome != report.OutcomeGroundingFailed {
 		t.Errorf("direct Outcome = %s, want GROUNDING_FAILED", v.Outcome)
 	}
