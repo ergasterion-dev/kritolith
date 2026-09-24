@@ -457,3 +457,61 @@ func decodeVector(raw []byte, dims int) ([]float32, error) {
 	}
 	return out, nil
 }
+
+// OSVEntry is one stored OSV advisory.
+type OSVEntry struct {
+	ID       string
+	Module   string
+	Modified string
+	Raw      []byte
+}
+
+// UpsertOSVEntry inserts id if it's new, or updates it if the stored
+// entry's Modified differs from modified. It reports whether the row
+// was written: false means the entry already existed with the same
+// Modified value, so the caller (kritolith osv sync) can report it as
+// unchanged rather than re-synced.
+func (s *Store) UpsertOSVEntry(ctx context.Context, id, module, modified string, raw []byte) (bool, error) {
+	var existing string
+	err := s.db.QueryRowContext(ctx, `SELECT modified FROM osv_entries WHERE id = ?`, id).Scan(&existing)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// New entry: fall through to insert.
+	case err != nil:
+		return false, fmt.Errorf("store: check osv entry %s: %w", id, err)
+	case existing == modified:
+		return false, nil
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO osv_entries (id, module, modified, raw)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			module = excluded.module, modified = excluded.modified, raw = excluded.raw`,
+		id, module, modified, raw)
+	if err != nil {
+		return false, fmt.Errorf("store: save osv entry %s: %w", id, err)
+	}
+	return true, nil
+}
+
+// OSVEntriesByModule returns every stored OSV entry for module.
+func (s *Store) OSVEntriesByModule(ctx context.Context, module string) ([]OSVEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, module, modified, raw FROM osv_entries WHERE module = ?`, module)
+	if err != nil {
+		return nil, fmt.Errorf("store: osv entries by module %s: %w", module, err)
+	}
+	defer rows.Close()
+	var out []OSVEntry
+	for rows.Next() {
+		var e OSVEntry
+		if err := rows.Scan(&e.ID, &e.Module, &e.Modified, &e.Raw); err != nil {
+			return nil, fmt.Errorf("store: scan osv entry by module %s: %w", module, err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read osv entries by module %s: %w", module, err)
+	}
+	return out, nil
+}

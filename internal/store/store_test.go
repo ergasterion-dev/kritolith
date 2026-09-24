@@ -346,3 +346,46 @@ func TestSaveAndFindEmbeddingsByRepo(t *testing.T) {
 		t.Fatalf("EmbeddingsByRepo after overwrite = %+v, want a single-element vector", got)
 	}
 }
+
+func TestUpsertAndFindOSVEntriesByModule(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	changed, err := s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2022-01-01T00:00:00Z", []byte(`{"id":"GO-2022-0603"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("first upsert of a new entry should report changed = true")
+	}
+
+	// Re-upsert with the same modified timestamp: no-op.
+	changed, err = s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2022-01-01T00:00:00Z", []byte(`{"id":"GO-2022-0603"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("re-upserting an unchanged entry should report changed = false")
+	}
+
+	// Re-upsert with a newer modified timestamp: writes.
+	changed, err = s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2022-02-01T00:00:00Z", []byte(`{"id":"GO-2022-0603","modified":"2022-02-01T00:00:00Z"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("re-upserting with a newer modified timestamp should report changed = true")
+	}
+
+	entries, err := s.OSVEntriesByModule(ctx, "gopkg.in/yaml.v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != "GO-2022-0603" || entries[0].Modified != "2022-02-01T00:00:00Z" {
+		t.Fatalf("OSVEntriesByModule = %+v, want one entry with the latest modified value", entries)
+	}
+
+	if none, err := s.OSVEntriesByModule(ctx, "no/such/module"); err != nil || len(none) != 0 {
+		t.Fatalf("OSVEntriesByModule for an unknown module = %+v, %v, want empty, nil", none, err)
+	}
+}
