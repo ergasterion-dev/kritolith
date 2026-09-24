@@ -265,3 +265,54 @@ func TestRunGroundingViaFallbackNeverGroundingFails(t *testing.T) {
 		t.Errorf("Outcome = %s, want INCONCLUSIVE when grounding resolved only a fallback version", v.Outcome)
 	}
 }
+
+type fakeDeduper struct {
+	matches []report.DupMatch
+	exact   bool
+	called  bool
+}
+
+func (f *fakeDeduper) Dedupe(_ context.Context, _ report.Report, _ []report.Claim, _ string) ([]report.DupMatch, bool) {
+	f.called = true
+	return f.matches, f.exact
+}
+
+func TestPipelineRunWithDedupe(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fd := &fakeDeduper{matches: []report.DupMatch{{ReportID: "prior", Score: 1.0}}, exact: true}
+	p := New(st).WithDedupe(fd)
+
+	v, err := p.Run(ctx, report.Report{ID: "r1", Repo: "owner/repo", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", Body: "no claims here"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fd.called {
+		t.Error("a configured Deduper must be called")
+	}
+	if v.Outcome != report.OutcomeLikelyDuplicate {
+		t.Errorf("Outcome = %s, want LIKELY_DUPLICATE", v.Outcome)
+	}
+}
+
+func TestPipelineRunWithoutDedupeUnchanged(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	p := New(st) // no WithDedupe: must behave exactly as before Week 4
+
+	v, err := p.Run(ctx, report.Report{ID: "r1", Repo: "owner/repo", Body: "no claims here"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Outcome != report.OutcomeNeedsInfo {
+		t.Errorf("Outcome = %s, want NEEDS_INFO (no ClaimedRef), unaffected by the new dedupe stage", v.Outcome)
+	}
+}

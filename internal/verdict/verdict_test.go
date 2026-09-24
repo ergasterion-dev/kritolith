@@ -160,3 +160,63 @@ func TestComposeFallbackResolvedHardFailureIsInconclusive(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeLikelyDuplicate(t *testing.T) {
+	r := report.Report{ID: "r1", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	res := StageResults{
+		GroundingRan: true, RefResolved: true,
+		DedupeRan: true, DedupeExactMatch: true,
+		Duplicates: []report.DupMatch{{ReportID: "prior", Score: 1.0}},
+	}
+	v := Compose(r, res)
+	if v.Outcome != report.OutcomeLikelyDuplicate {
+		t.Errorf("Outcome = %s, want LIKELY_DUPLICATE", v.Outcome)
+	}
+	if len(v.Duplicates) != 1 || v.Duplicates[0].ReportID != "prior" {
+		t.Errorf("Duplicates = %+v, want the dedupe match carried through", v.Duplicates)
+	}
+}
+
+func TestComposeGroundingFailedWinsOverDedupe(t *testing.T) {
+	r := report.Report{ID: "r1", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	res := StageResults{
+		GroundingRan: true, RefResolved: true,
+		Claims:           []report.Claim{{Kind: report.ClaimFunction, Verified: report.TriNo}},
+		DedupeRan:        true,
+		DedupeExactMatch: true,
+	}
+	v := Compose(r, res)
+	if v.Outcome != report.OutcomeGroundingFailed {
+		t.Errorf("Outcome = %s, want GROUNDING_FAILED even though dedupe also found an exact match", v.Outcome)
+	}
+}
+
+func TestComposeFallbackResolutionNeverUpgradesToDuplicate(t *testing.T) {
+	r := report.Report{ID: "r1", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	res := StageResults{
+		GroundingRan: true, RefResolved: true, ResolvedViaFallback: true,
+		Claims:           []report.Claim{{Kind: report.ClaimFunction, Verified: report.TriNo}},
+		DedupeRan:        true,
+		DedupeExactMatch: true,
+	}
+	v := Compose(r, res)
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE: a fallback-resolved hard-claim failure must not be upgraded by dedupe", v.Outcome)
+	}
+}
+
+func TestComposeDedupeRanButNoExactMatch(t *testing.T) {
+	r := report.Report{ID: "r1", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	res := StageResults{
+		GroundingRan: true, RefResolved: true,
+		DedupeRan:  true,
+		Duplicates: []report.DupMatch{{ReportID: "lead-only", Score: 0.95}},
+	}
+	v := Compose(r, res)
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE: an embedding-only lead must never set the outcome", v.Outcome)
+	}
+	if len(v.Duplicates) != 1 {
+		t.Errorf("Duplicates = %+v, want the lead still recorded for visibility", v.Duplicates)
+	}
+}

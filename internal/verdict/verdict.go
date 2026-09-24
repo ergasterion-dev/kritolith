@@ -45,6 +45,16 @@ type StageResults struct {
 	// 4's dedupe uses it to match a report's own code against the local
 	// OSV mirror, which is keyed by Go module path, not GitHub repo.
 	Module string
+	// DedupeRan is true when a Deduper was configured and called. Only
+	// meaningful together with DedupeExactMatch and Duplicates.
+	DedupeRan bool
+	// DedupeExactMatch is true when dedupe found an exact fingerprint or
+	// OSV match — the only dedupe signal strong enough to set Outcome.
+	DedupeExactMatch bool
+	// Duplicates holds up to the top 3 candidate matches dedupe found,
+	// by score, regardless of tier — including embedding-only leads
+	// that never change Outcome, kept here for maintainer visibility.
+	Duplicates []report.DupMatch
 }
 
 // Compose builds the verdict from the stage results available so far.
@@ -53,10 +63,13 @@ type StageResults struct {
 // (file or function) that grounding found missing -> GROUNDING_FAILED,
 // never on a line-only mismatch, and never when grounding resolved only
 // a fallback version rather than the claimed ref (that case is
-// INCONCLUSIVE); otherwise INCONCLUSIVE, since dedupe and sandbox
-// aren't implemented yet.
+// INCONCLUSIVE); an exact dedupe match -> LIKELY_DUPLICATE, checked
+// only after all of the above grounding branches, so a hard-claim
+// failure always wins over a dedupe match and a fallback-resolved
+// hard-claim failure stays INCONCLUSIVE rather than being upgraded by
+// dedupe; otherwise INCONCLUSIVE, since sandbox isn't implemented yet.
 func Compose(r report.Report, res StageResults) report.Verdict {
-	v := report.Verdict{ReportID: r.ID, Claims: res.Claims}
+	v := report.Verdict{ReportID: r.ID, Claims: res.Claims, Duplicates: res.Duplicates}
 	switch {
 	case r.ClaimedRef == "":
 		v.Outcome = report.OutcomeNeedsInfo
@@ -70,9 +83,12 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 	case res.GroundingRan && hardClaimFailed(res.Claims):
 		v.Outcome = report.OutcomeGroundingFailed
 		v.Notes = append(v.Notes, "a claimed file or function does not exist at the resolved commit")
+	case res.DedupeRan && res.DedupeExactMatch:
+		v.Outcome = report.OutcomeLikelyDuplicate
+		v.Notes = append(v.Notes, "an exact claim match was found against a prior report or a published advisory")
 	default:
 		v.Outcome = report.OutcomeInconclusive
-		v.Notes = append(v.Notes, "dedupe and sandbox stages are not implemented yet")
+		v.Notes = append(v.Notes, "sandbox stage is not implemented yet")
 	}
 	if res.LLMUnavailable {
 		v.Notes = append(v.Notes, "LLM extraction unavailable; deterministic claims only")

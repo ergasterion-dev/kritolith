@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ergasterion-dev/kritolith/internal/dedupe"
 	"github.com/ergasterion-dev/kritolith/internal/extract/deterministic"
 	"github.com/ergasterion-dev/kritolith/internal/extract/llmextract"
 	"github.com/ergasterion-dev/kritolith/internal/ground"
@@ -25,6 +26,7 @@ type Pipeline struct {
 	store    Store
 	llmChain llmextract.Chain // nil when no LLM is configured
 	grounder ground.Grounder  // nil when no Grounder is configured
+	deduper  dedupe.Deduper   // nil when no Deduper is configured
 }
 
 // New returns a Pipeline that persists to s, with no LLM or Grounder
@@ -45,6 +47,15 @@ func (p *Pipeline) WithLLM(chain llmextract.Chain) *Pipeline {
 // doesn't wire one in.
 func (p *Pipeline) WithGround(g ground.Grounder) *Pipeline {
 	p.grounder = g
+	return p
+}
+
+// WithDedupe returns p configured to also check claims for duplicates
+// through d. A nil deduper (New's default) skips the dedupe stage
+// entirely — Run behaves exactly as it did before Week 4 for any
+// caller that doesn't wire one in.
+func (p *Pipeline) WithDedupe(d dedupe.Deduper) *Pipeline {
+	p.deduper = d
 	return p
 }
 
@@ -75,6 +86,12 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 		res.ResolvedRef = resolvedRef
 		res.ResolvedViaFallback = viaFallback
 		res.Module = module
+	}
+	if p.deduper != nil {
+		matches, exactMatch := p.deduper.Dedupe(ctx, r, res.Claims, res.Module)
+		res.DedupeRan = true
+		res.Duplicates = matches
+		res.DedupeExactMatch = exactMatch
 	}
 	v := verdict.Compose(r, res)
 	if err := p.store.SaveVerdict(ctx, v); err != nil {
