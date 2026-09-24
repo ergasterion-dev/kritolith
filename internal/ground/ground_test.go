@@ -90,6 +90,13 @@ func TestGroundClaimsFileAndFunction(t *testing.T) {
 	if !strings.Contains(invented.Evidence, "parseHeaders") {
 		t.Errorf("invented function claim evidence = %q, want it to mention the closest match", invented.Evidence)
 	}
+	parsed := byValue["http2.parseHeaders"]
+	if parsed.DeclPkgDir != "internal/http2" || parsed.DeclReceiver != "" || parsed.DeclName != "parseHeaders" {
+		t.Errorf("existing function claim = %+v, want resolved declaration identity (internal/http2, \"\", parseHeaders)", parsed)
+	}
+	if invented.DeclPkgDir != "" || invented.DeclName != "" {
+		t.Errorf("invented function claim = %+v, want no declaration identity", invented)
+	}
 }
 
 func TestGroundClaimsRefDoesNotResolve(t *testing.T) {
@@ -201,6 +208,62 @@ func TestServiceGroundFallbackCapsGroundingFailed(t *testing.T) {
 	v = verdict.Compose(direct, verdict.StageResults{Claims: gr.Claims, GroundingRan: true, RefResolved: gr.RefResolved, ResolvedRef: gr.ResolvedRef, ResolvedViaFallback: gr.ViaFallback})
 	if v.Outcome != report.OutcomeGroundingFailed {
 		t.Errorf("direct Outcome = %s, want GROUNDING_FAILED", v.Outcome)
+	}
+}
+
+func TestGroundClaimsAmbiguousFunctionClaimNeverGetsDeclIdentity(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@test.example")
+	run("config", "user.name", "test")
+	files := map[string]string{
+		"pkg1/a.go": "package pkg1\n\ntype T struct{}\n\nfunc (t *T) M() {}\n",
+		"pkg2/b.go": "package pkg2\n\ntype T struct{}\n\nfunc (t *T) M() {}\n",
+	}
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "init")
+	commit := run("rev-parse", "HEAD")
+
+	m, err := OpenMirror(t.TempDir(), "owner/name", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
+	claims := []report.Claim{{Kind: report.ClaimFunction, Value: "(*T).M"}}
+	grounded, resolved, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved {
+		t.Fatal("want resolved = true")
+	}
+	c := grounded[0]
+	if c.Verified != report.TriYes {
+		t.Fatalf("claim = %+v, want Verified: yes (findDeclaration still finds a match)", c)
+	}
+	if c.DeclPkgDir != "" || c.DeclReceiver != "" || c.DeclName != "" {
+		t.Errorf("claim = %+v, want no declaration identity for an ambiguous (name, receiver)", c)
+	}
+	if !strings.Contains(c.Evidence, "ambiguous") {
+		t.Errorf("Evidence = %q, want it to mention the ambiguity", c.Evidence)
 	}
 }
 

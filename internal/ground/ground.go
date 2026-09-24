@@ -309,9 +309,16 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 // worst bug this project can have.
 func groundFunctionClaim(c *report.Claim, l *lazyIndex) {
 	idx := l.get()
-	if d := findDeclaration(idx.decls, c.Value); d != nil {
+	if d, ambiguous := resolveUnique(idx.decls, c.Value); d != nil {
 		c.Verified = report.TriYes
 		c.Evidence = fmt.Sprintf("declared at %s:%d", report.Printable(d.file), d.line)
+		if ambiguous {
+			c.Evidence += " (ambiguous name, cannot fingerprint)"
+			return
+		}
+		c.DeclPkgDir = path.Dir(d.file)
+		c.DeclReceiver = d.receiver
+		c.DeclName = d.name
 		return
 	}
 	closest := ""

@@ -355,6 +355,28 @@ func findDeclaration(decls []declaration, value string) *declaration {
 	return nil
 }
 
+// resolveUnique resolves value using the same matching rules as
+// findDeclaration (unchanged Verified/Evidence behavior for callers),
+// then reports whether the resolved declaration's (name, receiver)
+// pair is shared by any other declaration anywhere in decls. An
+// ambiguous resolution means grounding cannot be sure which
+// declaration the claim actually names — dedupe must not fingerprint
+// on it, even though the claim is still grounded normally (see
+// groundFunctionClaim in ground.go).
+func resolveUnique(decls []declaration, value string) (d *declaration, ambiguous bool) {
+	d = findDeclaration(decls, value)
+	if d == nil {
+		return nil, false
+	}
+	count := 0
+	for i := range decls {
+		if decls[i].name == d.name && decls[i].receiver == d.receiver {
+			count++
+		}
+	}
+	return d, count > 1
+}
+
 // closestDeclaration returns the declaration whose name is closest to
 // value's name part by edit distance, for a "not found, closest match"
 // evidence string. Returns nil if decls is empty.

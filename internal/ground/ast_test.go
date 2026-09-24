@@ -308,3 +308,71 @@ func TestScanIdentifiersToleratesUnparseableInput(t *testing.T) {
 		t.Errorf("identifiers = %v, want declaredInBrokenFile collected despite syntax errors", got)
 	}
 }
+
+func TestResolveUniqueSingleMatch(t *testing.T) {
+	decls := []declaration{{name: "peek", receiver: "parser", file: "decode.go", line: 10}}
+	d, ambiguous := resolveUnique(decls, "(*parser).peek")
+	if d == nil || d.name != "peek" {
+		t.Fatalf("resolveUnique = %v, %v, want a match on peek", d, ambiguous)
+	}
+	if ambiguous {
+		t.Error("a single matching declaration must not be ambiguous")
+	}
+}
+
+func TestResolveUniqueAmbiguousAcrossPackages(t *testing.T) {
+	// Two different packages each declare a type T with a method M — the
+	// exact G1 same-named-type collision. A claim naming "T.M" resolves
+	// to *a* declaration (findDeclaration's existing behavior, unchanged)
+	// but must now be reported ambiguous: grounding can't be sure which
+	// T the reporter meant.
+	decls := []declaration{
+		{name: "M", receiver: "T", file: "pkg1/a.go", line: 5},
+		{name: "M", receiver: "T", file: "pkg2/b.go", line: 9},
+	}
+	d, ambiguous := resolveUnique(decls, "(*T).M")
+	if d == nil {
+		t.Fatal("resolveUnique = nil, want a match (findDeclaration still finds one)")
+	}
+	if !ambiguous {
+		t.Error("two declarations sharing (name, receiver) must be reported ambiguous")
+	}
+}
+
+func TestResolveUniqueAmbiguousSamePackage(t *testing.T) {
+	// Two files in the same directory both declaring a plain function
+	// named Foo (e.g. GOOS-tagged variants this per-file scan can't tell
+	// are mutually exclusive) must also be ambiguous — the rule is
+	// "shared anywhere in the repo", not "shared across directories".
+	decls := []declaration{
+		{name: "Foo", file: "pkg/a_linux.go", line: 3},
+		{name: "Foo", file: "pkg/a_darwin.go", line: 3},
+	}
+	d, ambiguous := resolveUnique(decls, "Foo")
+	if d == nil {
+		t.Fatal("resolveUnique = nil, want a match")
+	}
+	if !ambiguous {
+		t.Error("two declarations with the same (name, receiver) in the same directory must still be ambiguous")
+	}
+}
+
+func TestResolveUniqueNoMatch(t *testing.T) {
+	d, ambiguous := resolveUnique(nil, "pkg.Func")
+	if d != nil || ambiguous {
+		t.Errorf("resolveUnique(nil, ...) = %v, %v, want nil, false", d, ambiguous)
+	}
+}
+
+func TestResolveUniqueBareNameUniquelyResolved(t *testing.T) {
+	// fab-017's exact scenario: a bare name with no written qualifier at
+	// all, but only one declaration in the whole repo has that name —
+	// it must resolve unambiguously.
+	decls := []declaration{
+		{name: "isOriginAllowed", file: "rest/internal/cors/handlers.go", line: 40},
+	}
+	d, ambiguous := resolveUnique(decls, "isOriginAllowed")
+	if d == nil || ambiguous {
+		t.Errorf("resolveUnique = %v, %v, want a unique match", d, ambiguous)
+	}
+}

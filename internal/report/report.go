@@ -102,12 +102,28 @@ type Report struct {
 }
 
 // Claim is one checkable statement extracted from a report.
+//
+// DeclPkgDir, DeclReceiver, and DeclName identify the resolved
+// declaration a ClaimFunction claim was grounded against — never the
+// claim's own literal written text — and are set only when that
+// declaration is unique in the repo (see ground.resolveUnique):
+// grounding found a match either way, but an ambiguous one (the same
+// name declared more than once) leaves these empty, since fingerprint
+// identity built on a guess would be worse than no identity at all.
+// DeclPkgDir is the directory the declaration's file lives in,
+// relative to the repo root — never a resolved import path, since
+// grounding has no import resolution. DeclReceiver is empty for a
+// plain function; that is not ambiguity, just the absence of a
+// receiver.
 type Claim struct {
-	Kind     ClaimKind `json:"kind"`
-	Value    string    `json:"value"`
-	Source   string    `json:"source"` // "deterministic" or "llm:<model>"
-	Verified Tri       `json:"verified"`
-	Evidence string    `json:"evidence"`
+	Kind         ClaimKind `json:"kind"`
+	Value        string    `json:"value"`
+	Source       string    `json:"source"` // "deterministic" or "llm:<model>"
+	Verified     Tri       `json:"verified"`
+	Evidence     string    `json:"evidence"`
+	DeclPkgDir   string    `json:"decl_pkg_dir,omitempty"`
+	DeclReceiver string    `json:"decl_receiver,omitempty"`
+	DeclName     string    `json:"decl_name,omitempty"`
 }
 
 // DupMatch is a possible duplicate of the report. Exactly one of
