@@ -110,11 +110,15 @@ type Claim struct {
 	Evidence string    `json:"evidence"`
 }
 
-// DupMatch is a possible duplicate of the report.
+// DupMatch is a possible duplicate of the report. Exactly one of
+// ReportID and AdvisoryID is set. Evidence says which signal produced
+// the match and on what; it can embed reporter-supplied claim text, so
+// it's untrusted and must pass through Printable before display.
 type DupMatch struct {
 	ReportID   string  `json:"report_id,omitempty"`
 	AdvisoryID string  `json:"advisory_id,omitempty"`
 	Score      float64 `json:"score"`
+	Evidence   string  `json:"evidence,omitempty"`
 }
 
 // ReproResult is the outcome of running the PoC at one ref.

@@ -1,9 +1,11 @@
 // Package dedupe flags likely-duplicate reports by matching grounded
 // claims against prior reports and the local OSV mirror, and by
 // embedding similarity when an LLM provider is configured. Only an
-// exact match (fingerprint or OSV) is strong enough to set a report's
-// outcome to LIKELY_DUPLICATE — a false one is exactly as bad as a
-// false GROUNDING_FAILED. Weaker signals are recorded as leads only.
+// exact fingerprint match against a prior report is strong enough to
+// set a report's outcome to LIKELY_DUPLICATE — a false one is exactly
+// as bad as a false GROUNDING_FAILED. Weaker signals (OSV symbol
+// matches, which don't yet check affected versions or vuln_class, and
+// embedding similarity) are recorded as leads only.
 package dedupe
 
 import (

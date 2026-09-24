@@ -21,6 +21,9 @@ type osvAdvisory struct {
 // package qualifier and a type name are syntactically indistinguishable
 // — the exact ambiguity ground.findDeclaration already accepts for the
 // same reason — so both the bare and qualified forms are checked.
+// Because of that looseness, and because it checks neither the
+// advisory's affected versions nor its vuln_class, a hit is only ever
+// recorded as a lead: it never sets Outcome.
 func matchesOSVSymbol(raw []byte, qualifier, name string) bool {
 	var adv osvAdvisory
 	if err := json.Unmarshal(raw, &adv); err != nil {

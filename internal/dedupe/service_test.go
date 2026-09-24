@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,11 +31,19 @@ func openTemp(t *testing.T) *store.Store {
 
 func saveReportWithClaims(t *testing.T, s *store.Store, id, repo string, claims []report.Claim) {
 	t.Helper()
+	savePrior(t, s, report.Report{ID: id, Repo: repo}, report.OutcomeInconclusive, claims)
+}
+
+// savePrior saves r (ReceivedAt filled in) with a verdict of outcome
+// carrying claims, as pipeline.Run would have for an earlier report.
+func savePrior(t *testing.T, s *store.Store, r report.Report, outcome report.Outcome, claims []report.Claim) {
+	t.Helper()
 	ctx := context.Background()
-	if err := s.SaveReport(ctx, report.Report{ID: id, Repo: repo, ReceivedAt: time.Now()}); err != nil {
+	r.ReceivedAt = time.Now()
+	if err := s.SaveReport(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveVerdict(ctx, report.Verdict{ReportID: id, Outcome: report.OutcomeInconclusive, Claims: claims}); err != nil {
+	if err := s.SaveVerdict(ctx, report.Verdict{ReportID: r.ID, Outcome: outcome, Claims: claims}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -57,6 +67,9 @@ func TestServiceDedupeExactFingerprintMatch(t *testing.T) {
 	if len(matches) != 1 || matches[0].ReportID != "prior" || matches[0].Score != 1.0 {
 		t.Fatalf("matches = %+v, want a single exact match on report \"prior\"", matches)
 	}
+	if want := "fingerprint match: parser.peek (out-of-bounds read)"; matches[0].Evidence != want {
+		t.Errorf("Evidence = %q, want %q", matches[0].Evidence, want)
+	}
 }
 
 func TestServiceDedupeEmptyStoreNoMatch(t *testing.T) {
@@ -67,7 +80,7 @@ func TestServiceDedupeEmptyStoreNoMatch(t *testing.T) {
 	svc := NewService(s, nil)
 	claims := []report.Claim{
 		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
-		{Kind: report.ClaimVulnClass, Value: "race"},
+		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	matches, exact := svc.Dedupe(ctx, report.Report{ID: "first", Repo: "owner/repo"}, claims, "")
 	if exact {
@@ -104,7 +117,7 @@ func TestServiceDedupeDegradesOnClosedStore(t *testing.T) {
 	svc := NewService(s, nil)
 	claims := []report.Claim{
 		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
-		{Kind: report.ClaimVulnClass, Value: "race"},
+		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	matches, exact := svc.Dedupe(ctx, report.Report{ID: "r", Repo: "owner/repo"}, claims, "")
 	if exact || len(matches) != 0 {
@@ -169,6 +182,9 @@ func TestServiceDedupeEmbeddingLeadNeverSetsExact(t *testing.T) {
 	if len(matches) != 1 || matches[0].ReportID != "prior" || matches[0].Score <= 0.99 {
 		t.Fatalf("matches = %+v, want one high-similarity lead on \"prior\"", matches)
 	}
+	if want := "embedding similarity 1.00 (lead only)"; matches[0].Evidence != want {
+		t.Errorf("Evidence = %q, want %q", matches[0].Evidence, want)
+	}
 
 	// The new report's own embedding must now be stored too.
 	stored, err := s.EmbeddingsByRepo(ctx, "owner/repo", "prior")
@@ -201,6 +217,161 @@ func TestServiceDedupeOSVBareNameNeverMatches(t *testing.T) {
 	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "example.com/mod")
 	if exact || len(matches) != 0 {
 		t.Errorf("matches = %+v, exact = %v; a bare function name must never match an OSV symbol", matches, exact)
+	}
+}
+
+const osvPeekAdvisory = `{"affected":[{"ecosystem_specific":{"imports":[{"symbols":["parser.peek"]}]}}]}`
+
+func TestServiceDedupeOSVMatchIsLeadOnly(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	if _, err := s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2024-01-01T00:00:00Z", []byte(osvPeekAdvisory)); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(s, nil)
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "out-of-bounds read", Verified: report.TriUnknown},
+	}
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "go-yaml/yaml"}, claims, "gopkg.in/yaml.v3")
+	if exact {
+		t.Error("an OSV symbol match alone must never set exact = true: it checks neither affected versions nor vuln_class")
+	}
+	if len(matches) != 1 || matches[0].AdvisoryID != "GO-2022-0603" || matches[0].ReportID != "" {
+		t.Fatalf("matches = %+v, want one OSV lead on GO-2022-0603", matches)
+	}
+	if ev := matches[0].Evidence; !strings.Contains(ev, "OSV symbol match: parser.peek") || !strings.Contains(ev, "GO-2022-0603") {
+		t.Errorf("Evidence = %q, want it to name the matched symbol and advisory", ev)
+	}
+}
+
+func TestServiceDedupeFingerprintStillExactAlongsideOSVLead(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "out-of-bounds read", Verified: report.TriUnknown},
+	}
+	saveReportWithClaims(t, s, "prior", "go-yaml/yaml", claims)
+	if _, err := s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2024-01-01T00:00:00Z", []byte(osvPeekAdvisory)); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(s, nil)
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "go-yaml/yaml"}, claims, "gopkg.in/yaml.v3")
+	if !exact {
+		t.Error("a fingerprint match must still set exact = true")
+	}
+	if len(matches) != 2 || matches[0].ReportID != "prior" || matches[1].AdvisoryID != "GO-2022-0603" {
+		t.Fatalf("matches = %+v, want the exact fingerprint match ranked before the OSV lead", matches)
+	}
+}
+
+func TestServiceDedupeCollapsesMatchesPerIdentity(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	// 2 function claims x 2 vuln_class claims = 4 matching fingerprint
+	// pairs against the same prior report, and 2 claims hitting the
+	// same OSV advisory.
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "parser.peek", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*parser).advance", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "out-of-bounds read", Verified: report.TriUnknown},
+		{Kind: report.ClaimVulnClass, Value: "panic", Verified: report.TriUnknown},
+	}
+	saveReportWithClaims(t, s, "prior", "go-yaml/yaml", claims)
+	saveReportWithClaims(t, s, "other", "go-yaml/yaml", []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*parser).advance", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "panic", Verified: report.TriUnknown},
+	})
+	if _, err := s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2024-01-01T00:00:00Z", []byte(osvPeekAdvisory)); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(s, nil)
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "go-yaml/yaml"}, claims, "gopkg.in/yaml.v3")
+	if !exact {
+		t.Fatal("want exact = true")
+	}
+	seen := map[string]int{}
+	for _, m := range matches {
+		seen[m.ReportID+"|"+m.AdvisoryID]++
+	}
+	if len(matches) != 3 || seen["prior|"] != 1 || seen["other|"] != 1 || seen["|GO-2022-0603"] != 1 {
+		t.Fatalf("matches = %+v, want exactly one entry each for prior, other, and GO-2022-0603", matches)
+	}
+}
+
+func TestServiceDedupeDeterministicOrder(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
+	}
+	// Five equally-scored exact matches: which three survive, and in
+	// what order, must not depend on map iteration order.
+	for _, id := range []string{"e", "c", "a", "d", "b"} {
+		saveReportWithClaims(t, s, id, "owner/repo", claims)
+	}
+
+	svc := NewService(s, nil)
+	first, _ := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "")
+	if len(first) != 3 || first[0].ReportID != "a" || first[1].ReportID != "b" || first[2].ReportID != "c" {
+		t.Fatalf("matches = %+v, want a, b, c (score tie broken by ID)", first)
+	}
+	for i := 0; i < 20; i++ {
+		again, _ := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "")
+		if !reflect.DeepEqual(first, again) {
+			t.Fatalf("run %d: matches = %+v, want identical to first run %+v", i, again, first)
+		}
+	}
+}
+
+func TestServiceDedupeSameSourceRefNeverSelfMatches(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
+	}
+	const path = "/corpus/real/a/report.md"
+	savePrior(t, s, report.Report{ID: "first-run", Source: report.SourceFile, SourceRef: path, Repo: "owner/repo"}, report.OutcomeInconclusive, claims)
+
+	svc := NewService(s, nil)
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "second-run", Source: report.SourceFile, SourceRef: path, Repo: "owner/repo"}, claims, "")
+	if exact || len(matches) != 0 {
+		t.Errorf("matches = %+v, exact = %v; a re-run of the same report must never match its own earlier run", matches, exact)
+	}
+}
+
+func TestServiceDedupeRejectedPriorNeverAnchors(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
+	}
+	savePrior(t, s, report.Report{ID: "fabricated", Repo: "owner/repo"}, report.OutcomeGroundingFailed, claims)
+
+	svc := NewService(s, nil)
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "")
+	if exact || len(matches) != 0 {
+		t.Errorf("matches = %+v, exact = %v; a GROUNDING_FAILED prior report must never anchor a duplicate match", matches, exact)
 	}
 }
 

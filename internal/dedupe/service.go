@@ -24,8 +24,10 @@ type Deduper interface {
 	// against it. module is grounding's resolved go.mod module path
 	// (StageResults.Module), used only for the OSV-mirror signal; pass
 	// "" when ungrounded. It returns up to the top 3 candidate matches
-	// by score, and whether any of them is an exact-tier match (the
-	// only signal strong enough to set Outcome to LIKELY_DUPLICATE).
+	// by rank (one per matched report or advisory), and whether any
+	// of them is an exact-tier match — a fingerprint match against a
+	// prior report, the only signal strong enough to set Outcome to
+	// LIKELY_DUPLICATE. OSV symbol and embedding matches are leads.
 	Dedupe(ctx context.Context, r report.Report, claims []report.Claim, module string) (matches []report.DupMatch, exactMatch bool)
 }
 
@@ -50,13 +52,27 @@ func NewService(st *store.Store, router *llm.Router) *Service {
 	return &Service{store: st, router: router}
 }
 
+// osvLeadScore is the score of an OSV symbol lead. It's still a
+// genuine exact textual symbol match, so it ranks alongside other
+// strong leads — but candidate ranking puts every exact-tier
+// (fingerprint) match ahead of it regardless of score.
+const osvLeadScore = 1.0
+
+// candidate is one DupMatch plus whether it came from the exact tier —
+// used only for ranking, so an Outcome-setting fingerprint match always
+// survives the top-3 cut ahead of a same-score lead.
+type candidate struct {
+	match report.DupMatch
+	exact bool
+}
+
 // Dedupe implements Deduper.
 func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.Claim, module string) ([]report.DupMatch, bool) {
-	var candidates []report.DupMatch
+	var candidates []candidate
 	exact := false
 
 	if mine := claimFingerprints(r.Repo, claims); len(mine) > 0 {
-		if prior, err := s.store.ClaimsByRepo(ctx, r.Repo, r.ID); err != nil {
+		if prior, err := s.store.ClaimsByRepo(ctx, r.Repo, r.ID, r.SourceRef); err != nil {
 			slog.Default().Warn("dedupe: could not load prior claims, skipping fingerprint match",
 				"report_id", r.ID, "error", err)
 		} else {
@@ -65,7 +81,14 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 				for _, a := range mine {
 					for _, b := range theirs {
 						if a.matches(b) {
-							candidates = append(candidates, report.DupMatch{ReportID: reportID, Score: 1.0})
+							candidates = append(candidates, candidate{
+								match: report.DupMatch{
+									ReportID: reportID,
+									Score:    1.0,
+									Evidence: fmt.Sprintf("fingerprint match: %s.%s (%s)", a.qualifier, a.name, a.vulnClass),
+								},
+								exact: true,
+							})
 							exact = true
 						}
 					}
@@ -74,6 +97,12 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 		}
 	}
 
+	// An OSV symbol hit is a lead only, never exact: matchesOSVSymbol
+	// checks neither the advisory's affected version ranges against
+	// the claimed ref (a ref past the fix is a different bug by
+	// definition) nor the vuln_class, and accepts a bare-name symbol
+	// under any qualifier. Until it does, a public entry point that
+	// merely appears in some advisory must not set Outcome.
 	if module != "" {
 		if entries, err := s.store.OSVEntriesByModule(ctx, module); err != nil {
 			slog.Default().Warn("dedupe: could not load OSV entries, skipping OSV match",
@@ -89,8 +118,12 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 				}
 				for _, e := range entries {
 					if matchesOSVSymbol(e.Raw, qualifier, name) {
-						candidates = append(candidates, report.DupMatch{AdvisoryID: e.ID, Score: 1.0})
-						exact = true
+						candidates = append(candidates, candidate{match: report.DupMatch{
+							AdvisoryID: e.ID,
+							Score:      osvLeadScore,
+							Evidence: fmt.Sprintf("OSV symbol match: %s.%s (%s); lead only, affected versions not checked",
+								qualifier, name, e.ID),
+						}})
 					}
 				}
 			}
@@ -112,7 +145,11 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 						continue // different model/dims: not comparable
 					}
 					if score := cosineSimilarity(vec, other.Vector); score >= embeddingMatchThreshold {
-						candidates = append(candidates, report.DupMatch{ReportID: reportID, Score: score})
+						candidates = append(candidates, candidate{match: report.DupMatch{
+							ReportID: reportID,
+							Score:    score,
+							Evidence: fmt.Sprintf("embedding similarity %.2f (lead only)", score),
+						}})
 					}
 				}
 			}
@@ -122,11 +159,58 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Score > candidates[j].Score })
-	if len(candidates) > 3 {
-		candidates = candidates[:3]
+	return topMatches(candidates, 3), exact
+}
+
+// topMatches collapses candidates to one per identity (ReportID,
+// AdvisoryID) — keeping the best-ranked entry, and its evidence — then
+// returns at most n of them in rank order. Without the collapse, one
+// prior report matching on several claim pairs could fill every slot
+// and push out a genuinely different duplicate.
+//
+// Ranking is total, so identical inputs always yield identical output
+// regardless of the map iteration order the candidates were built in:
+// exact-tier first, then score descending, then ReportID, AdvisoryID
+// and Evidence ascending.
+func topMatches(candidates []candidate, n int) []report.DupMatch {
+	type identity struct{ reportID, advisoryID string }
+	best := map[identity]candidate{}
+	for _, c := range candidates {
+		id := identity{c.match.ReportID, c.match.AdvisoryID}
+		if cur, ok := best[id]; !ok || rankBefore(c, cur) {
+			best[id] = c
+		}
 	}
-	return candidates, exact
+	unique := make([]candidate, 0, len(best))
+	for _, c := range best {
+		unique = append(unique, c)
+	}
+	sort.SliceStable(unique, func(i, j int) bool { return rankBefore(unique[i], unique[j]) })
+	if len(unique) > n {
+		unique = unique[:n]
+	}
+	var out []report.DupMatch
+	for _, c := range unique {
+		out = append(out, c.match)
+	}
+	return out
+}
+
+// rankBefore reports whether a ranks strictly ahead of b.
+func rankBefore(a, b candidate) bool {
+	if a.exact != b.exact {
+		return a.exact
+	}
+	if a.match.Score != b.match.Score {
+		return a.match.Score > b.match.Score
+	}
+	if a.match.ReportID != b.match.ReportID {
+		return a.match.ReportID < b.match.ReportID
+	}
+	if a.match.AdvisoryID != b.match.AdvisoryID {
+		return a.match.AdvisoryID < b.match.AdvisoryID
+	}
+	return a.match.Evidence < b.match.Evidence
 }
 
 // embedText tries each provider in router's "embed" chain in order,

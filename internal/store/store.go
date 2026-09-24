@@ -352,16 +352,37 @@ func nilIfEmpty[T any](s []T) []T {
 }
 
 // ClaimsByRepo returns every function and vuln_class claim from
-// reports in repo other than excludeReportID, grouped by report ID.
-// Dedupe uses this to fingerprint-match a report against every prior
-// report already saved for the same repository.
-func (s *Store) ClaimsByRepo(ctx context.Context, repo, excludeReportID string) (map[string][]report.Claim, error) {
+// reports in repo, grouped by report ID. Dedupe uses this to
+// fingerprint-match a report against every prior report already saved
+// for the same repository.
+//
+// It excludes excludeReportID (the report being deduped) and, when
+// excludeSourceRef is non-empty, every report with that same
+// SourceRef: a re-run of the same underlying report (the same file
+// checked again against a reused data dir) gets a fresh ULID but keeps
+// its SourceRef, and must never be flagged as a duplicate of its own
+// earlier run. An empty excludeSourceRef excludes nothing beyond the
+// ID — in particular, not every report whose own SourceRef is empty.
+//
+// Only reports whose verdict makes them a trustworthy original can
+// anchor a match: a GROUNDING_FAILED report (already shown to cite
+// code that doesn't exist) or a NEEDS_INFO one must never suppress a
+// later, legitimate report as its "duplicate", and a LIKELY_DUPLICATE
+// one is excluded so a match always points at the original report,
+// not along a chain of duplicates. A report with no verdict yet is
+// excluded too (the inner join drops it) — the conservative default.
+func (s *Store) ClaimsByRepo(ctx context.Context, repo, excludeReportID, excludeSourceRef string) (map[string][]report.Claim, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.report_id, c.kind, c.value, c.source, c.verified, c.evidence
 		FROM claims c
 		JOIN reports r ON r.id = c.report_id
-		WHERE r.repo = ? AND c.report_id != ? AND c.kind IN (?, ?)`,
-		repo, excludeReportID, string(report.ClaimFunction), string(report.ClaimVulnClass))
+		JOIN verdicts v ON v.report_id = c.report_id
+		WHERE r.repo = ? AND c.report_id != ? AND c.kind IN (?, ?)
+			AND (? = '' OR r.source_ref != ?)
+			AND v.outcome NOT IN (?, ?, ?)`,
+		repo, excludeReportID, string(report.ClaimFunction), string(report.ClaimVulnClass),
+		excludeSourceRef, excludeSourceRef,
+		string(report.OutcomeGroundingFailed), string(report.OutcomeNeedsInfo), string(report.OutcomeLikelyDuplicate))
 	if err != nil {
 		return nil, fmt.Errorf("store: claims by repo %s: %w", repo, err)
 	}

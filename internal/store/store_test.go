@@ -295,7 +295,7 @@ func TestClaimsByRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.ClaimsByRepo(ctx, "owner/repo", "r2")
+	got, err := s.ClaimsByRepo(ctx, "owner/repo", "r2", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,6 +304,88 @@ func TestClaimsByRepo(t *testing.T) {
 	}
 	if _, ok := got["r3"]; ok {
 		t.Error("ClaimsByRepo returned a claim from a different repo")
+	}
+}
+
+// saveAnchor saves a report and a verdict carrying one function claim,
+// so it's a candidate fingerprint-match anchor for ClaimsByRepo.
+func saveAnchor(t *testing.T, s *Store, id, sourceRef string, outcome report.Outcome) {
+	t.Helper()
+	ctx := context.Background()
+	r := report.Report{ID: id, Source: report.SourceFile, SourceRef: sourceRef, Repo: "owner/repo", ReceivedAt: time.Now()}
+	if err := s.SaveReport(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveVerdict(ctx, report.Verdict{
+		ReportID: id, Outcome: outcome,
+		Claims: []report.Claim{{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaimsByRepoExcludesSameSourceRef(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	// A first run of the same report file (different ULID, same
+	// SourceRef) and an unrelated report with no SourceRef at all.
+	saveAnchor(t, s, "first-run", "/corpus/real/a/report.md", report.OutcomeInconclusive)
+	saveAnchor(t, s, "other-file", "/corpus/real/b/report.md", report.OutcomeInconclusive)
+	saveAnchor(t, s, "no-ref", "", report.OutcomeInconclusive)
+
+	got, err := s.ClaimsByRepo(ctx, "owner/repo", "second-run", "/corpus/real/a/report.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["first-run"]; ok {
+		t.Error("ClaimsByRepo must exclude a prior report with the same SourceRef (a re-run of the same report)")
+	}
+	if _, ok := got["other-file"]; !ok {
+		t.Error("ClaimsByRepo must keep a prior report with a different SourceRef")
+	}
+	if _, ok := got["no-ref"]; !ok {
+		t.Error("ClaimsByRepo must keep a prior report with an empty SourceRef")
+	}
+
+	// An empty excludeSourceRef must exclude nothing beyond the ID —
+	// in particular not every report whose own SourceRef is empty.
+	got, err = s.ClaimsByRepo(ctx, "owner/repo", "second-run", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Errorf("ClaimsByRepo with empty excludeSourceRef = %d reports, want all 3", len(got))
+	}
+}
+
+func TestClaimsByRepoExcludesRejectedAnchors(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	saveAnchor(t, s, "grounding-failed", "", report.OutcomeGroundingFailed)
+	saveAnchor(t, s, "needs-info", "", report.OutcomeNeedsInfo)
+	saveAnchor(t, s, "already-dup", "", report.OutcomeLikelyDuplicate)
+	saveAnchor(t, s, "inconclusive", "", report.OutcomeInconclusive)
+	saveAnchor(t, s, "reproduced", "", report.OutcomeReproduced)
+	// A saved report with no verdict yet must never anchor a match.
+	if err := s.SaveReport(ctx, report.Report{ID: "no-verdict", Repo: "owner/repo", ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ClaimsByRepo(ctx, "owner/repo", "new", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"grounding-failed", "needs-info", "already-dup", "no-verdict"} {
+		if _, ok := got[id]; ok {
+			t.Errorf("ClaimsByRepo returned %q; a rejected, duplicate, or unverdicted report must never anchor a match", id)
+		}
+	}
+	for _, id := range []string{"inconclusive", "reproduced"} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("ClaimsByRepo dropped %q; a normal prior report must still anchor a match", id)
+		}
 	}
 }
 
