@@ -265,3 +265,84 @@ func TestSaveVerdictErrors(t *testing.T) {
 		t.Errorf("missing verdict err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestClaimsByRepo(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	r1 := report.Report{ID: "r1", Repo: "owner/repo", ReceivedAt: time.Now()}
+	r2 := report.Report{ID: "r2", Repo: "owner/repo", ReceivedAt: time.Now()}
+	r3 := report.Report{ID: "r3", Repo: "other/repo", ReceivedAt: time.Now()}
+	for _, r := range []report.Report{r1, r2, r3} {
+		if err := s.SaveReport(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveVerdict(ctx, report.Verdict{
+		ReportID: "r1", Outcome: report.OutcomeInconclusive,
+		Claims: []report.Claim{
+			{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+			{Kind: report.ClaimFile, Value: "a.go", Verified: report.TriUnknown}, // not function/vuln_class: excluded
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveVerdict(ctx, report.Verdict{
+		ReportID: "r3", Outcome: report.OutcomeInconclusive,
+		Claims: []report.Claim{{Kind: report.ClaimFunction, Value: "(*Other).N", Verified: report.TriYes}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ClaimsByRepo(ctx, "owner/repo", "r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["r1"]) != 1 || got["r1"][0].Value != "(*T).M" {
+		t.Fatalf("ClaimsByRepo = %+v, want exactly r1's function claim", got)
+	}
+	if _, ok := got["r3"]; ok {
+		t.Error("ClaimsByRepo returned a claim from a different repo")
+	}
+}
+
+func TestSaveAndFindEmbeddingsByRepo(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	for _, id := range []string{"r1", "r2"} {
+		if err := s.SaveReport(ctx, report.Report{ID: id, Repo: "owner/repo", ReceivedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vec := []float32{0.1, 0.2, 0.3}
+	if err := s.SaveEmbedding(ctx, "r1", "local-embed", vec); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.EmbeddingsByRepo(ctx, "owner/repo", "r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, ok := got["r1"]
+	if !ok || e.Model != "local-embed" || len(e.Vector) != 3 {
+		t.Fatalf("EmbeddingsByRepo = %+v, want r1's embedding", got)
+	}
+	for i := range vec {
+		if e.Vector[i] != vec[i] {
+			t.Errorf("Vector[%d] = %v, want %v", i, e.Vector[i], vec[i])
+		}
+	}
+
+	// Overwrite: SaveEmbedding replaces, not appends.
+	if err := s.SaveEmbedding(ctx, "r1", "local-embed", []float32{0.9}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.EmbeddingsByRepo(ctx, "owner/repo", "r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["r1"].Vector) != 1 {
+		t.Fatalf("EmbeddingsByRepo after overwrite = %+v, want a single-element vector", got)
+	}
+}

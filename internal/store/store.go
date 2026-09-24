@@ -5,10 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -347,4 +349,111 @@ func nilIfEmpty[T any](s []T) []T {
 		return nil
 	}
 	return s
+}
+
+// ClaimsByRepo returns every function and vuln_class claim from
+// reports in repo other than excludeReportID, grouped by report ID.
+// Dedupe uses this to fingerprint-match a report against every prior
+// report already saved for the same repository.
+func (s *Store) ClaimsByRepo(ctx context.Context, repo, excludeReportID string) (map[string][]report.Claim, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.report_id, c.kind, c.value, c.source, c.verified, c.evidence
+		FROM claims c
+		JOIN reports r ON r.id = c.report_id
+		WHERE r.repo = ? AND c.report_id != ? AND c.kind IN (?, ?)`,
+		repo, excludeReportID, string(report.ClaimFunction), string(report.ClaimVulnClass))
+	if err != nil {
+		return nil, fmt.Errorf("store: claims by repo %s: %w", repo, err)
+	}
+	defer rows.Close()
+	out := map[string][]report.Claim{}
+	for rows.Next() {
+		var reportID, kind, verified string
+		var c report.Claim
+		if err := rows.Scan(&reportID, &kind, &c.Value, &c.Source, &verified, &c.Evidence); err != nil {
+			return nil, fmt.Errorf("store: scan claim by repo %s: %w", repo, err)
+		}
+		c.Kind, c.Verified = report.ClaimKind(kind), report.Tri(verified)
+		out[reportID] = append(out[reportID], c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read claims by repo %s: %w", repo, err)
+	}
+	return out, nil
+}
+
+// Embedding is one stored report's title+body embedding vector.
+type Embedding struct {
+	Model  string
+	Vector []float32
+}
+
+// SaveEmbedding inserts or replaces reportID's embedding.
+func (s *Store) SaveEmbedding(ctx context.Context, reportID, model string, vector []float32) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO embeddings (report_id, model, dims, vector)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(report_id) DO UPDATE SET
+			model = excluded.model, dims = excluded.dims, vector = excluded.vector`,
+		reportID, model, len(vector), encodeVector(vector))
+	if err != nil {
+		return fmt.Errorf("store: save embedding for %s: %w", reportID, err)
+	}
+	return nil
+}
+
+// EmbeddingsByRepo returns every stored embedding for reports in repo
+// other than excludeReportID, keyed by report ID.
+func (s *Store) EmbeddingsByRepo(ctx context.Context, repo, excludeReportID string) (map[string]Embedding, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.report_id, e.model, e.dims, e.vector
+		FROM embeddings e
+		JOIN reports r ON r.id = e.report_id
+		WHERE r.repo = ? AND e.report_id != ?`, repo, excludeReportID)
+	if err != nil {
+		return nil, fmt.Errorf("store: embeddings by repo %s: %w", repo, err)
+	}
+	defer rows.Close()
+	out := map[string]Embedding{}
+	for rows.Next() {
+		var reportID, model string
+		var dims int
+		var raw []byte
+		if err := rows.Scan(&reportID, &model, &dims, &raw); err != nil {
+			return nil, fmt.Errorf("store: scan embedding by repo %s: %w", repo, err)
+		}
+		vec, err := decodeVector(raw, dims)
+		if err != nil {
+			return nil, fmt.Errorf("store: decode embedding for %s: %w", reportID, err)
+		}
+		out[reportID] = Embedding{Model: model, Vector: vec}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read embeddings by repo %s: %w", repo, err)
+	}
+	return out, nil
+}
+
+// encodeVector packs a []float32 into a little-endian byte slice for
+// the embeddings.vector BLOB column.
+func encodeVector(v []float32) []byte {
+	buf := make([]byte, 4*len(v))
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
+	}
+	return buf
+}
+
+// decodeVector is encodeVector's inverse. A byte length that doesn't
+// match 4*dims means the row is corrupt, reported as an error rather
+// than silently truncated or padded.
+func decodeVector(raw []byte, dims int) ([]float32, error) {
+	if len(raw) != 4*dims {
+		return nil, fmt.Errorf("store: embedding has %d bytes, want %d for dims=%d", len(raw), 4*dims, dims)
+	}
+	out := make([]float32, dims)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+	}
+	return out, nil
 }
