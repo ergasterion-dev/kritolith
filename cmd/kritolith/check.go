@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
+	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
 	"github.com/ergasterion-dev/kritolith/internal/store"
@@ -70,7 +71,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	defer st.Close()
 
-	p := pipeline.New(st)
+	p := pipeline.New(st).WithGround(ground.NewService(dir))
 	if cfg != nil {
 		router, err := buildRouter(*cfg, nil)
 		if err != nil {
