@@ -57,6 +57,34 @@ func (s Scoreboard) RealGroundingFailures() int {
 	return n
 }
 
+// RealLikelyDuplicates counts real reports wrongly marked
+// LIKELY_DUPLICATE. The v1 requirement is zero, same discipline as
+// RealGroundingFailures: a false duplicate flag is exactly as bad as a
+// false grounding rejection.
+func (s Scoreboard) RealLikelyDuplicates() int {
+	n := 0
+	for _, r := range s.Results {
+		if r.Case.Kind == KindReal && r.Got == report.OutcomeLikelyDuplicate {
+			n++
+		}
+	}
+	return n
+}
+
+// FabricatedLikelyDuplicates counts fabricated cases that were NOT
+// expecting LIKELY_DUPLICATE but got it anyway — a coincidental
+// fingerprint or OSV collision between two unrelated fabricated cases,
+// which would itself be a bug worth knowing about.
+func (s Scoreboard) FabricatedLikelyDuplicates() int {
+	n := 0
+	for _, r := range s.Results {
+		if r.Case.Kind == KindFabricated && r.Case.Meta.Expected != report.OutcomeLikelyDuplicate && r.Got == report.OutcomeLikelyDuplicate {
+			n++
+		}
+	}
+	return n
+}
+
 // FabricatedCaught returns how many fabricated cases expecting
 // GROUNDING_FAILED got it, out of how many expected it.
 func (s Scoreboard) FabricatedCaught() (caught, total int) {
@@ -87,7 +115,7 @@ func (s Scoreboard) Errors() int {
 // report marked GROUNDING_FAILED, or any case that couldn't run.
 // Ordinary mismatches are progress to track, not failures.
 func (s Scoreboard) Failed() bool {
-	return s.RealGroundingFailures() > 0 || s.Errors() > 0
+	return s.RealGroundingFailures() > 0 || s.RealLikelyDuplicates() > 0 || s.Errors() > 0
 }
 
 // Write prints the per-case table and the summary.
@@ -110,11 +138,13 @@ func (s Scoreboard) Write(w io.Writer) error {
 	caught, total := s.FabricatedCaught()
 	_, err := fmt.Fprintf(w, `
 Summary
-  cases:                           %d
-  exact matches:                   %d/%d
-  real wrongly GROUNDING_FAILED:   %d (must be 0)
-  fabricated caught by grounding:  %d/%d
-  errors:                          %d
-`, len(s.Results), s.Matches(), len(s.Results), s.RealGroundingFailures(), caught, total, s.Errors())
+  cases:                                 %d
+  exact matches:                         %d/%d
+  real wrongly GROUNDING_FAILED:         %d (must be 0)
+  real wrongly LIKELY_DUPLICATE:         %d (must be 0)
+  fabricated caught by grounding:        %d/%d
+  fabricated wrongly LIKELY_DUPLICATE:   %d
+  errors:                                %d
+`, len(s.Results), s.Matches(), len(s.Results), s.RealGroundingFailures(), s.RealLikelyDuplicates(), caught, total, s.FabricatedLikelyDuplicates(), s.Errors())
 	return err
 }

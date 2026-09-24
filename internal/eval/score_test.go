@@ -75,3 +75,26 @@ func TestScoreboardPassing(t *testing.T) {
 		t.Fatal("a mismatch alone must not fail the run; only real GROUNDING_FAILED or errors do")
 	}
 }
+
+func TestRealLikelyDuplicates(t *testing.T) {
+	sb := Scoreboard{Results: []Result{
+		{Case: Case{ID: "r1", Kind: KindReal, Meta: Meta{Expected: report.OutcomeReproduced}}, Got: report.OutcomeLikelyDuplicate},
+		{Case: Case{ID: "r2", Kind: KindReal, Meta: Meta{Expected: report.OutcomeInconclusive}}, Got: report.OutcomeInconclusive},
+	}}
+	if n := sb.RealLikelyDuplicates(); n != 1 {
+		t.Errorf("RealLikelyDuplicates = %d, want 1", n)
+	}
+	if !sb.Failed() {
+		t.Error("a real report wrongly marked LIKELY_DUPLICATE must fail the run")
+	}
+}
+
+func TestFabricatedLikelyDuplicates(t *testing.T) {
+	sb := Scoreboard{Results: []Result{
+		{Case: Case{ID: "f1", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeGroundingFailed}}, Got: report.OutcomeLikelyDuplicate},
+		{Case: Case{ID: "f2", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeLikelyDuplicate}}, Got: report.OutcomeLikelyDuplicate},
+	}}
+	if n := sb.FabricatedLikelyDuplicates(); n != 1 {
+		t.Errorf("FabricatedLikelyDuplicates = %d, want 1 (f2 expected it, so it doesn't count)", n)
+	}
+}

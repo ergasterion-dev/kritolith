@@ -9,8 +9,10 @@ import (
 	"io"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
+	"github.com/ergasterion-dev/kritolith/internal/dedupe"
 	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
+	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
 	"github.com/ergasterion-dev/kritolith/internal/store"
 	"github.com/ergasterion-dev/kritolith/internal/verdict"
@@ -71,15 +73,16 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	defer st.Close()
 
-	p := pipeline.New(st).WithGround(ground.NewService(dir))
+	var router *llm.Router
 	if cfg != nil {
-		router, err := buildRouter(*cfg, nil)
+		router, err = buildRouter(*cfg, nil)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		if router != nil {
-			p = p.WithLLM(router)
-		}
+	}
+	p := pipeline.New(st).WithGround(ground.NewService(dir)).WithDedupe(dedupe.NewService(st, router))
+	if router != nil {
+		p = p.WithLLM(router)
 	}
 
 	v, err := p.Run(ctx, r)

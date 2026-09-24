@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
+	"github.com/ergasterion-dev/kritolith/internal/dedupe"
 	"github.com/ergasterion-dev/kritolith/internal/eval"
 	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
+	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/store"
@@ -71,15 +73,16 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	defer st.Close()
-	p := pipeline.New(st).WithGround(ground.NewService(dir))
+	var router *llm.Router
 	if cfg != nil {
-		router, err := buildRouter(*cfg, nil)
+		router, err = buildRouter(*cfg, nil)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		if router != nil {
-			p = p.WithLLM(router)
-		}
+	}
+	p := pipeline.New(st).WithGround(ground.NewService(dir)).WithDedupe(dedupe.NewService(st, router))
+	if router != nil {
+		p = p.WithLLM(router)
 	}
 
 	sb := eval.Run(ctx, cases, func(ctx context.Context, c eval.Case) (report.Outcome, error) {
@@ -101,8 +104,8 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if sb.Failed() {
-		fmt.Fprintf(stderr, "kritolith: eval failed: %d real reports marked GROUNDING_FAILED, %d errors\n",
-			sb.RealGroundingFailures(), sb.Errors())
+		fmt.Fprintf(stderr, "kritolith: eval failed: %d real reports marked GROUNDING_FAILED, %d real reports marked LIKELY_DUPLICATE, %d errors\n",
+			sb.RealGroundingFailures(), sb.RealLikelyDuplicates(), sb.Errors())
 		return 1
 	}
 	return 0
