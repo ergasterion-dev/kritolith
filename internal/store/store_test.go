@@ -136,7 +136,7 @@ func TestOpenPragmasAndMigrations(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil || fk != 1 {
 		t.Fatalf("foreign_keys = %d, %v", fk, err)
 	}
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 1 {
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
 		t.Fatalf("user_version = %d, %v", version, err)
 	}
 	s.Close()
@@ -145,6 +145,36 @@ func TestOpenPragmasAndMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	s2.Close()
+}
+
+func TestMigrationBackfillsExistingClaimsRows(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := Open(ctx, filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := sampleReport()
+	if err := s.SaveReport(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a claim saved before this migration existed by inserting
+	// directly with only the pre-migration columns present in the
+	// INSERT — the new columns must still default to '' via the
+	// migration's DEFAULT '', not NULL or an error.
+	if err := s.SaveVerdict(ctx, report.Verdict{
+		ReportID: r.ID, Outcome: report.OutcomeInconclusive,
+		Claims: []report.Claim{{Kind: report.ClaimFunction, Value: "pkg.Old", Verified: report.TriYes}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetVerdict(ctx, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Claims) != 1 || got.Claims[0].DeclPkgDir != "" || got.Claims[0].DeclReceiver != "" || got.Claims[0].DeclName != "" {
+		t.Fatalf("claim = %+v, want empty decl_* fields for a claim saved with none set", got.Claims[0])
+	}
 }
 
 func TestOpenRejectsNewerSchema(t *testing.T) {
@@ -193,7 +223,7 @@ func TestVerdictRoundTrip(t *testing.T) {
 		ReportID: r.ID,
 		Outcome:  report.OutcomeGroundingFailed,
 		Claims: []report.Claim{
-			{Kind: report.ClaimFunction, Value: "http2.parseHeader", Source: "deterministic", Verified: report.TriNo, Evidence: "not declared"},
+			{Kind: report.ClaimFunction, Value: "http2.parseHeader", Source: "deterministic", Verified: report.TriNo, Evidence: "not declared", DeclPkgDir: "internal/http2", DeclReceiver: "", DeclName: "parseHeader"},
 			{Kind: report.ClaimFile, Value: "http2/frame.go", Source: "deterministic", Verified: report.TriYes, Evidence: "found"},
 		},
 		Duplicates: []report.DupMatch{{AdvisoryID: "GHSA-xxxx", Score: 0.91}},
@@ -282,7 +312,7 @@ func TestClaimsByRepo(t *testing.T) {
 	if err := s.SaveVerdict(ctx, report.Verdict{
 		ReportID: "r1", Outcome: report.OutcomeInconclusive,
 		Claims: []report.Claim{
-			{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+			{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes, DeclPkgDir: "pkg", DeclReceiver: "T", DeclName: "M"},
 			{Kind: report.ClaimFile, Value: "a.go", Verified: report.TriUnknown}, // not function/vuln_class: excluded
 		},
 	}); err != nil {
@@ -304,6 +334,9 @@ func TestClaimsByRepo(t *testing.T) {
 	}
 	if _, ok := got["r3"]; ok {
 		t.Error("ClaimsByRepo returned a claim from a different repo")
+	}
+	if got["r1"][0].DeclPkgDir != "pkg" || got["r1"][0].DeclReceiver != "T" || got["r1"][0].DeclName != "M" {
+		t.Errorf("ClaimsByRepo = %+v, want the decl_* columns round-tripped", got["r1"][0])
 	}
 }
 

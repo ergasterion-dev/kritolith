@@ -260,9 +260,9 @@ func (s *Store) SaveVerdict(ctx context.Context, v report.Verdict) error {
 	}
 	for i, c := range v.Claims {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO claims (report_id, kind, value, source, verified, evidence)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			v.ReportID, string(c.Kind), c.Value, c.Source, string(c.Verified), c.Evidence); err != nil {
+			INSERT INTO claims (report_id, kind, value, source, verified, evidence, decl_pkg_dir, decl_receiver, decl_name)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			v.ReportID, string(c.Kind), c.Value, c.Source, string(c.Verified), c.Evidence, c.DeclPkgDir, c.DeclReceiver, c.DeclName); err != nil {
 			return fmt.Errorf("store: save claim %d for %s: %w", i, v.ReportID, err)
 		}
 	}
@@ -313,7 +313,7 @@ func (s *Store) GetVerdict(ctx context.Context, reportID string) (report.Verdict
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT kind, value, source, verified, evidence
+		SELECT kind, value, source, verified, evidence, decl_pkg_dir, decl_receiver, decl_name
 		FROM claims WHERE report_id = ? ORDER BY id`, reportID)
 	if err != nil {
 		return report.Verdict{}, fmt.Errorf("store: get claims for %s: %w", reportID, err)
@@ -322,7 +322,7 @@ func (s *Store) GetVerdict(ctx context.Context, reportID string) (report.Verdict
 	for rows.Next() {
 		var c report.Claim
 		var kind, verified string
-		if err := rows.Scan(&kind, &c.Value, &c.Source, &verified, &c.Evidence); err != nil {
+		if err := rows.Scan(&kind, &c.Value, &c.Source, &verified, &c.Evidence, &c.DeclPkgDir, &c.DeclReceiver, &c.DeclName); err != nil {
 			return report.Verdict{}, fmt.Errorf("store: scan claim for %s: %w", reportID, err)
 		}
 		c.Kind, c.Verified = report.ClaimKind(kind), report.Tri(verified)
@@ -373,7 +373,7 @@ func nilIfEmpty[T any](s []T) []T {
 // excluded too (the inner join drops it) — the conservative default.
 func (s *Store) ClaimsByRepo(ctx context.Context, repo, excludeReportID, excludeSourceRef string) (map[string][]report.Claim, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.report_id, c.kind, c.value, c.source, c.verified, c.evidence
+		SELECT c.report_id, c.kind, c.value, c.source, c.verified, c.evidence, c.decl_pkg_dir, c.decl_receiver, c.decl_name
 		FROM claims c
 		JOIN reports r ON r.id = c.report_id
 		JOIN verdicts v ON v.report_id = c.report_id
@@ -391,7 +391,7 @@ func (s *Store) ClaimsByRepo(ctx context.Context, repo, excludeReportID, exclude
 	for rows.Next() {
 		var reportID, kind, verified string
 		var c report.Claim
-		if err := rows.Scan(&reportID, &kind, &c.Value, &c.Source, &verified, &c.Evidence); err != nil {
+		if err := rows.Scan(&reportID, &kind, &c.Value, &c.Source, &verified, &c.Evidence, &c.DeclPkgDir, &c.DeclReceiver, &c.DeclName); err != nil {
 			return nil, fmt.Errorf("store: scan claim by repo %s: %w", repo, err)
 		}
 		c.Kind, c.Verified = report.ClaimKind(kind), report.Tri(verified)
