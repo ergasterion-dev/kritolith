@@ -11,21 +11,24 @@ package dedupe
 import (
 	"strings"
 
-	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
 // fingerprint is a normalized, exact-match-only identity for one
-// (verified function claim, vuln_class claim) pair. qualifier is the
-// literal "pkg"/"T" text the reporter wrote — never resolved to an
-// import path, since grounding itself has no import resolution (see
-// the design spec's Gap G1 discussion). All four fields must be
-// non-empty for two fingerprints to match; this, plus requiring the
-// same repo, is what keeps a same-named-symbol coincidence in a
-// different package from producing a false duplicate.
+// (resolved function declaration, vuln_class claim) pair. pkgDir,
+// receiver, and name come from where grounding actually found the
+// declaration — never from the claim's literal written text — and
+// only when that declaration is unique in the repo (see
+// ground.resolveUnique, via report.Claim.DeclPkgDir/DeclReceiver/DeclName):
+// a claim whose resolution is ambiguous carries no declaration
+// identity at all and can never fingerprint. repo, pkgDir, name, and
+// vulnClass must all be non-empty for two fingerprints to match;
+// receiver may legitimately be empty on both sides (a plain function,
+// not an unresolved one).
 type fingerprint struct {
 	repo      string
-	qualifier string
+	pkgDir    string
+	receiver  string
 	name      string
 	vulnClass string
 }
@@ -34,22 +37,23 @@ type fingerprint struct {
 // vulnerability.
 func (a fingerprint) matches(b fingerprint) bool {
 	return a.repo != "" && a.repo == b.repo &&
-		a.qualifier != "" && a.qualifier == b.qualifier &&
+		a.pkgDir != "" && a.pkgDir == b.pkgDir &&
+		a.receiver == b.receiver &&
 		a.name != "" && a.name == b.name &&
 		a.vulnClass != "" && a.vulnClass == b.vulnClass
 }
 
 // claimFingerprints returns every exact-tier-eligible fingerprint
 // derivable from claims: the cross product of every verified
-// (Verified: yes) function claim with a non-empty qualifier, and every
-// vuln_class claim. A function claim with an empty qualifier (a bare
-// name like "Read") never contributes — the same reasoning grounding
-// itself uses for refusing to disprove bare names applies here: a bare
-// name is too easily a stdlib or dependency symbol to anchor an
-// identity claim on.
+// (Verified: yes) function claim whose declaration grounding resolved
+// uniquely (DeclPkgDir and DeclName both set — see
+// ground.groundFunctionClaim) with every vuln_class claim. A function
+// claim grounding couldn't resolve to one unambiguous declaration
+// never contributes, regardless of whether the claim text itself was
+// qualified or bare.
 func claimFingerprints(repo string, claims []report.Claim) []fingerprint {
-	type funcName struct{ qualifier, name string }
-	var funcs []funcName
+	type decl struct{ pkgDir, receiver, name string }
+	var funcs []decl
 	var vulnClasses []string
 	for _, c := range claims {
 		switch c.Kind {
@@ -57,11 +61,10 @@ func claimFingerprints(repo string, claims []report.Claim) []fingerprint {
 			if c.Verified != report.TriYes {
 				continue
 			}
-			qualifier, name := ground.SplitFunctionClaim(c.Value)
-			if qualifier == "" || name == "" {
+			if c.DeclPkgDir == "" || c.DeclName == "" {
 				continue
 			}
-			funcs = append(funcs, funcName{qualifier: qualifier, name: name})
+			funcs = append(funcs, decl{pkgDir: c.DeclPkgDir, receiver: c.DeclReceiver, name: c.DeclName})
 		case report.ClaimVulnClass:
 			if v := strings.ToLower(strings.TrimSpace(c.Value)); v != "" {
 				vulnClasses = append(vulnClasses, v)
@@ -71,7 +74,7 @@ func claimFingerprints(repo string, claims []report.Claim) []fingerprint {
 	var out []fingerprint
 	for _, f := range funcs {
 		for _, vc := range vulnClasses {
-			out = append(out, fingerprint{repo: repo, qualifier: f.qualifier, name: f.name, vulnClass: vc})
+			out = append(out, fingerprint{repo: repo, pkgDir: f.pkgDir, receiver: f.receiver, name: f.name, vulnClass: vc})
 		}
 	}
 	return out

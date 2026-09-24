@@ -85,7 +85,12 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 								match: report.DupMatch{
 									ReportID: reportID,
 									Score:    1.0,
-									Evidence: fmt.Sprintf("fingerprint match: %s.%s (%s)", a.qualifier, a.name, a.vulnClass),
+									Evidence: fmt.Sprintf("fingerprint match: %s.%s (%s)", func() string {
+										if a.receiver != "" {
+											return a.receiver
+										}
+										return a.pkgDir
+									}(), a.name, a.vulnClass),
 								},
 								exact: true,
 							})
