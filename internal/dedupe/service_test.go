@@ -180,6 +180,30 @@ func TestServiceDedupeEmbeddingLeadNeverSetsExact(t *testing.T) {
 	}
 }
 
+func TestServiceDedupeOSVBareNameNeverMatches(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	// A bare-name symbol ("Read", no qualifier) in the OSV mirror. The
+	// design spec (see fingerprint.go) treats a bare name as too easily
+	// a stdlib or dependency symbol to anchor an identity claim on; the
+	// OSV branch must apply the same guard the fingerprint branch does.
+	raw := []byte(`{"affected":[{"ecosystem_specific":{"imports":[{"symbols":["Read"]}]}}]}`)
+	if _, err := s.UpsertOSVEntry(ctx, "GHSA-osv-bare", "example.com/mod", "2024-01-01T00:00:00Z", raw); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(s, nil)
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "Read", Verified: report.TriYes},
+	}
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "example.com/mod")
+	if exact || len(matches) != 0 {
+		t.Errorf("matches = %+v, exact = %v; a bare function name must never match an OSV symbol", matches, exact)
+	}
+}
+
 func TestServiceImplementsDeduper(t *testing.T) {
 	var _ Deduper = (*Service)(nil)
 }

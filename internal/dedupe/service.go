@@ -84,7 +84,7 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 					continue
 				}
 				qualifier, name := ground.SplitFunctionClaim(c.Value)
-				if name == "" {
+				if qualifier == "" || name == "" {
 					continue
 				}
 				for _, e := range entries {
