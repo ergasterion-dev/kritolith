@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -383,6 +384,45 @@ func TestUpsertAndFindOSVEntriesByModule(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].ID != "GO-2022-0603" || entries[0].Modified != "2022-02-01T00:00:00Z" {
 		t.Fatalf("OSVEntriesByModule = %+v, want one entry with the latest modified value", entries)
+	}
+	// Verify that raw and module are also updated on conflict update.
+	wantRaw := []byte(`{"id":"GO-2022-0603","modified":"2022-02-01T00:00:00Z"}`)
+	if !bytes.Equal(entries[0].Raw, wantRaw) {
+		t.Errorf("Raw after update = %s, want %s (must update raw on ON CONFLICT)", entries[0].Raw, wantRaw)
+	}
+	if entries[0].Module != "gopkg.in/yaml.v3" {
+		t.Errorf("Module = %q, want %q", entries[0].Module, "gopkg.in/yaml.v3")
+	}
+
+	// Update with a different module to verify module field is also updated.
+	changed, err = s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v2", "2022-03-01T00:00:00Z", []byte(`{"id":"GO-2022-0603","modified":"2022-03-01T00:00:00Z"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("re-upserting with newer modified and different module should report changed = true")
+	}
+
+	// Verify old module no longer has the entry.
+	old, err := s.OSVEntriesByModule(ctx, "gopkg.in/yaml.v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old) != 0 {
+		t.Fatalf("OSVEntriesByModule for gopkg.in/yaml.v3 after module change = %+v, want empty (module field was updated)", old)
+	}
+
+	// Verify new module has the entry with the updated raw and modified.
+	entries, err = s.OSVEntriesByModule(ctx, "gopkg.in/yaml.v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Module != "gopkg.in/yaml.v2" || entries[0].Modified != "2022-03-01T00:00:00Z" {
+		t.Fatalf("OSVEntriesByModule after module update = %+v, want entry in new module with updated modified", entries)
+	}
+	wantRaw = []byte(`{"id":"GO-2022-0603","modified":"2022-03-01T00:00:00Z"}`)
+	if !bytes.Equal(entries[0].Raw, wantRaw) {
+		t.Errorf("Raw after module update = %s, want %s", entries[0].Raw, wantRaw)
 	}
 
 	if none, err := s.OSVEntriesByModule(ctx, "no/such/module"); err != nil || len(none) != 0 {
