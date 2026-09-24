@@ -24,11 +24,11 @@ func TestRunAndScore(t *testing.T) {
 		"f1": report.OutcomeGroundingFailed,
 		"f2": report.OutcomeInconclusive,
 	}
-	sb := Run(context.Background(), cases, func(_ context.Context, c Case) (report.Outcome, error) {
+	sb := Run(context.Background(), cases, func(_ context.Context, c Case) (CheckResult, error) {
 		if c.ID == "f3" {
-			return "", errors.New("boom")
+			return CheckResult{}, errors.New("boom")
 		}
-		return got[c.ID], nil
+		return CheckResult{Outcome: got[c.ID]}, nil
 	})
 	if sb.Matches() != 2 {
 		t.Errorf("Matches = %d, want 2", sb.Matches())
@@ -96,5 +96,24 @@ func TestFabricatedLikelyDuplicates(t *testing.T) {
 	}}
 	if n := sb.FabricatedLikelyDuplicates(); n != 1 {
 		t.Errorf("FabricatedLikelyDuplicates = %d, want 1 (f2 expected it, so it doesn't count)", n)
+	}
+}
+
+func TestDuplicateTop1Accuracy(t *testing.T) {
+	sb := Scoreboard{Results: []Result{
+		{Case: Case{ID: "real-1", Kind: KindReal, Meta: Meta{Expected: report.OutcomeReproduced}}, Got: report.OutcomeReproduced, ReportID: "run-id-real-1"},
+		// Correct: points at real-1's actual report ID.
+		{Case: Case{ID: "dup-correct", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeLikelyDuplicate, ExpectedDuplicateOf: "real-1"}},
+			Got: report.OutcomeLikelyDuplicate, ReportID: "run-id-dup-correct", Duplicates: []report.DupMatch{{ReportID: "run-id-real-1", Score: 1.0}}},
+		// Wrong: outcome is right but the top match points at a
+		// different report than the one it's actually a duplicate of.
+		{Case: Case{ID: "dup-wrong", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeLikelyDuplicate, ExpectedDuplicateOf: "real-1"}},
+			Got: report.OutcomeLikelyDuplicate, ReportID: "run-id-dup-wrong", Duplicates: []report.DupMatch{{ReportID: "some-other-report", Score: 1.0}}},
+		// Not a duplicate case at all: excluded from the denominator.
+		{Case: Case{ID: "unrelated", Kind: KindFabricated, Meta: Meta{Expected: report.OutcomeGroundingFailed}}, Got: report.OutcomeGroundingFailed},
+	}}
+	correct, total := sb.DuplicateTop1Accuracy()
+	if correct != 1 || total != 2 {
+		t.Errorf("DuplicateTop1Accuracy = %d/%d, want 1/2", correct, total)
 	}
 }

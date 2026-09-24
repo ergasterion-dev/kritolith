@@ -28,7 +28,12 @@ type Meta struct {
 	Ref      string         `json:"ref"`
 	Expected report.Outcome `json:"expected_outcome"`
 	Source   string         `json:"source"` // GHSA-/GO- id for real, "fabricated" otherwise
-	Notes    string         `json:"notes,omitempty"`
+	// ExpectedDuplicateOf is another case's ID this case is a
+	// near-duplicate of: Scoreboard.DuplicateTop1Accuracy checks that
+	// the LIKELY_DUPLICATE verdict's top match actually points at that
+	// case's report, not merely that the outcome came out right.
+	ExpectedDuplicateOf string `json:"expected_duplicate_of,omitempty"`
+	Notes               string `json:"notes,omitempty"`
 }
 
 // Case is one corpus entry.
@@ -67,6 +72,15 @@ func LoadCorpus(root string) ([]Case, error) {
 				return nil, err
 			}
 			cases = append(cases, c)
+		}
+	}
+	ids := map[string]bool{}
+	for _, c := range cases {
+		ids[c.ID] = true
+	}
+	for _, c := range cases {
+		if c.Meta.ExpectedDuplicateOf != "" && !ids[c.Meta.ExpectedDuplicateOf] {
+			return nil, fmt.Errorf("eval: %s/%s: expected_duplicate_of %q does not match any loaded case id", c.Kind, c.ID, c.Meta.ExpectedDuplicateOf)
 		}
 	}
 	return cases, nil
@@ -121,6 +135,14 @@ func loadCase(dir string, kind Kind) (Case, error) {
 	case KindFabricated:
 		if m.Source != "fabricated" {
 			return fail(`fabricated case source must be "fabricated", got %q`, m.Source)
+		}
+	}
+	if m.ExpectedDuplicateOf != "" {
+		if !caseIDRe.MatchString(m.ExpectedDuplicateOf) {
+			return fail("expected_duplicate_of must be a valid case id, got %q", m.ExpectedDuplicateOf)
+		}
+		if m.Expected != report.OutcomeLikelyDuplicate {
+			return fail("expected_duplicate_of is only meaningful when expected_outcome is LIKELY_DUPLICATE")
 		}
 	}
 	return Case{ID: id, Kind: kind, Dir: dir, Meta: m}, nil

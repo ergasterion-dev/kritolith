@@ -3,5 +3,6 @@
   "ref": "539c8e751b99281a79dc659ba8dc44d91e444723",
   "expected_outcome": "LIKELY_DUPLICATE",
   "source": "fabricated",
+  "expected_duplicate_of": "go-2022-0603",
   "notes": "Fabricated near-duplicate of real case go-2022-0603 (same repo go-yaml/yaml, same ref, same function (*parser).peek in decode.go). Reworded from the original advisory text; expected LIKELY_DUPLICATE."
 }

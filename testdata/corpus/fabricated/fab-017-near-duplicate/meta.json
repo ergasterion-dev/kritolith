@@ -3,5 +3,6 @@
   "ref": "d953675085476c98772fbc495ccaf47b9fd479df",
   "expected_outcome": "LIKELY_DUPLICATE",
   "source": "fabricated",
+  "expected_duplicate_of": "go-2024-2604",
   "notes": "Fabricated near-duplicate of real case go-2024-2604 (same repo zeromicro/go-zero, same ref, same function isOriginAllowed in rest/internal/cors/handlers.go). Reworded; expected LIKELY_DUPLICATE."
 }

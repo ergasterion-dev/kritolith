@@ -52,6 +52,8 @@ func TestLoadCorpusRejects(t *testing.T) {
 		{"real expecting grounding failure", "real", "r1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"GROUNDING_FAILED","source":"GO-2024-1"}`, "never"},
 		{"fabricated with advisory source", "fabricated", "f1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"INCONCLUSIVE","source":"GHSA-x"}`, "fabricated"},
 		{"trailing data", "fabricated", "f1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"INCONCLUSIVE","source":"fabricated"}{"repo":"a/b"}`, "trailing data"},
+		{"expected_duplicate_of not LIKELY_DUPLICATE", "fabricated", "f1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"INCONCLUSIVE","source":"fabricated","expected_duplicate_of":"go-2024-0001"}`, "only meaningful"},
+		{"expected_duplicate_of bad id shape", "fabricated", "f1", `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"LIKELY_DUPLICATE","source":"fabricated","expected_duplicate_of":"Bad_ID"}`, "valid case id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,6 +64,28 @@ func TestLoadCorpusRejects(t *testing.T) {
 				t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadCorpusRejectsUnknownExpectedDuplicateOf(t *testing.T) {
+	root := t.TempDir()
+	writeCase(t, root, "fabricated", "f1", `{"repo":"a/b","ref":"`+sha+`","expected_outcome":"LIKELY_DUPLICATE","source":"fabricated","expected_duplicate_of":"no-such-case"}`)
+	_, err := LoadCorpus(root)
+	if err == nil || !strings.Contains(err.Error(), "does not match any loaded case id") {
+		t.Fatalf("err = %v, want it to reject an expected_duplicate_of naming no loaded case", err)
+	}
+}
+
+func TestLoadCorpusAcceptsExpectedDuplicateOf(t *testing.T) {
+	root := t.TempDir()
+	writeCase(t, root, "real", "go-2024-0001", `{"repo":"golang/net","ref":"`+sha+`","expected_outcome":"REPRODUCED","source":"GO-2024-0001"}`)
+	writeCase(t, root, "fabricated", "f1", `{"repo":"golang/net","ref":"`+sha+`","expected_outcome":"LIKELY_DUPLICATE","source":"fabricated","expected_duplicate_of":"go-2024-0001"}`)
+	cases, err := LoadCorpus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 2 || cases[1].Meta.ExpectedDuplicateOf != "go-2024-0001" {
+		t.Fatalf("cases = %+v", cases)
 	}
 }
 

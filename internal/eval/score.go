@@ -9,14 +9,23 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
-// CheckFunc runs one case through Kritolith and returns its outcome.
-type CheckFunc func(ctx context.Context, c Case) (report.Outcome, error)
+// CheckResult is what one case run through Kritolith produced.
+type CheckResult struct {
+	Outcome    report.Outcome
+	ReportID   string
+	Duplicates []report.DupMatch
+}
+
+// CheckFunc runs one case through Kritolith and returns its result.
+type CheckFunc func(ctx context.Context, c Case) (CheckResult, error)
 
 // Result is one case's outcome.
 type Result struct {
-	Case Case
-	Got  report.Outcome
-	Err  error
+	Case       Case
+	Got        report.Outcome
+	ReportID   string
+	Duplicates []report.DupMatch
+	Err        error
 }
 
 // Scoreboard summarizes an eval run.
@@ -28,8 +37,8 @@ type Scoreboard struct {
 func Run(ctx context.Context, cases []Case, check CheckFunc) Scoreboard {
 	var sb Scoreboard
 	for _, c := range cases {
-		got, err := check(ctx, c)
-		sb.Results = append(sb.Results, Result{Case: c, Got: got, Err: err})
+		res, err := check(ctx, c)
+		sb.Results = append(sb.Results, Result{Case: c, Got: res.Outcome, ReportID: res.ReportID, Duplicates: res.Duplicates, Err: err})
 	}
 	return sb
 }
@@ -100,6 +109,32 @@ func (s Scoreboard) FabricatedCaught() (caught, total int) {
 	return caught, total
 }
 
+// DuplicateTop1Accuracy returns how many cases whose Meta.ExpectedDuplicateOf
+// is set had a top-ranked duplicate match pointing at that target case's
+// own report, out of how many such cases exist. This is the actual
+// instrument behind CLAUDE.md's "duplicate top-1 accuracy >= 80%" target:
+// FabricatedLikelyDuplicates only checks the outcome, never whether the
+// matched prior report is the *correct* one.
+func (s Scoreboard) DuplicateTop1Accuracy() (correct, total int) {
+	reportIDs := map[string]string{} // case ID -> its own run's report ID
+	for _, r := range s.Results {
+		if r.Err == nil && r.ReportID != "" {
+			reportIDs[r.Case.ID] = r.ReportID
+		}
+	}
+	for _, r := range s.Results {
+		if r.Case.Meta.ExpectedDuplicateOf == "" {
+			continue
+		}
+		total++
+		want := reportIDs[r.Case.Meta.ExpectedDuplicateOf]
+		if want != "" && len(r.Duplicates) > 0 && r.Duplicates[0].ReportID == want {
+			correct++
+		}
+	}
+	return correct, total
+}
+
 // Errors counts cases that failed to run.
 func (s Scoreboard) Errors() int {
 	n := 0
@@ -136,6 +171,7 @@ func (s Scoreboard) Write(w io.Writer) error {
 		return err
 	}
 	caught, total := s.FabricatedCaught()
+	dupCorrect, dupTotal := s.DuplicateTop1Accuracy()
 	_, err := fmt.Fprintf(w, `
 Summary
   cases:                                 %d
@@ -144,7 +180,8 @@ Summary
   real wrongly LIKELY_DUPLICATE:         %d (must be 0)
   fabricated caught by grounding:        %d/%d
   fabricated wrongly LIKELY_DUPLICATE:   %d
+  duplicate top-1 accuracy:              %d/%d
   errors:                                %d
-`, len(s.Results), s.Matches(), len(s.Results), s.RealGroundingFailures(), s.RealLikelyDuplicates(), caught, total, s.FabricatedLikelyDuplicates(), s.Errors())
+`, len(s.Results), s.Matches(), len(s.Results), s.RealGroundingFailures(), s.RealLikelyDuplicates(), caught, total, s.FabricatedLikelyDuplicates(), dupCorrect, dupTotal, s.Errors())
 	return err
 }

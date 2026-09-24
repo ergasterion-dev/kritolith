@@ -16,7 +16,6 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
 	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
-	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/store"
 )
 
@@ -85,20 +84,20 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		p = p.WithLLM(router)
 	}
 
-	sb := eval.Run(ctx, cases, func(ctx context.Context, c eval.Case) (report.Outcome, error) {
+	sb := eval.Run(ctx, cases, func(ctx context.Context, c eval.Case) (eval.CheckResult, error) {
 		opts := file.Options{Repo: c.Meta.Repo, Ref: c.Meta.Ref, ReportPath: filepath.Join(c.Dir, "report.md")}
 		if st, err := os.Stat(filepath.Join(c.Dir, "poc")); err == nil && st.IsDir() {
 			opts.PoCDir = filepath.Join(c.Dir, "poc")
 		}
 		r, err := file.Load(opts)
 		if err != nil {
-			return "", err
+			return eval.CheckResult{}, err
 		}
 		v, err := p.Run(ctx, r)
 		if err != nil {
-			return "", err
+			return eval.CheckResult{}, err
 		}
-		return v.Outcome, nil
+		return eval.CheckResult{Outcome: v.Outcome, ReportID: r.ID, Duplicates: v.Duplicates}, nil
 	})
 	if err := sb.Write(stdout); err != nil {
 		return fail(stderr, err)
