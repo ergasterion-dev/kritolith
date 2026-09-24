@@ -48,12 +48,14 @@ type StageResults struct {
 	// DedupeRan is true when a Deduper was configured and called. Only
 	// meaningful together with DedupeExactMatch and Duplicates.
 	DedupeRan bool
-	// DedupeExactMatch is true when dedupe found an exact fingerprint or
-	// OSV match — the only dedupe signal strong enough to set Outcome.
+	// DedupeExactMatch is true when dedupe found an exact fingerprint
+	// match against a prior report — the only dedupe signal strong
+	// enough to set Outcome (OSV symbol and embedding matches are leads).
 	DedupeExactMatch bool
 	// Duplicates holds up to the top 3 candidate matches dedupe found,
-	// by score, regardless of tier — including embedding-only leads
-	// that never change Outcome, kept here for maintainer visibility.
+	// one per matched report or advisory, exact-tier first then by
+	// score — including OSV and embedding leads that never change
+	// Outcome, kept here for maintainer visibility.
 	Duplicates []report.DupMatch
 }
 
@@ -67,7 +69,10 @@ type StageResults struct {
 // only after all of the above grounding branches, so a hard-claim
 // failure always wins over a dedupe match and a fallback-resolved
 // hard-claim failure stays INCONCLUSIVE rather than being upgraded by
-// dedupe; otherwise INCONCLUSIVE, since sandbox isn't implemented yet.
+// dedupe, and an exact dedupe match is itself withheld when grounding
+// resolved only a fallback version (the Verified: yes claims its
+// fingerprint rests on were checked against a commit the reporter never
+// named); otherwise INCONCLUSIVE, since sandbox isn't implemented yet.
 func Compose(r report.Report, res StageResults) report.Verdict {
 	v := report.Verdict{ReportID: r.ID, Claims: res.Claims, Duplicates: res.Duplicates}
 	switch {
@@ -83,11 +88,14 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 	case res.GroundingRan && hardClaimFailed(res.Claims):
 		v.Outcome = report.OutcomeGroundingFailed
 		v.Notes = append(v.Notes, "a claimed file or function does not exist at the resolved commit")
-	case res.DedupeRan && res.DedupeExactMatch:
+	case res.DedupeRan && res.DedupeExactMatch && !res.ResolvedViaFallback:
 		v.Outcome = report.OutcomeLikelyDuplicate
-		v.Notes = append(v.Notes, "an exact claim match was found against a prior report or a published advisory")
+		v.Notes = append(v.Notes, "an exact claim match was found against a prior report")
 	default:
 		v.Outcome = report.OutcomeInconclusive
+		if res.DedupeRan && res.DedupeExactMatch && res.ResolvedViaFallback {
+			v.Notes = append(v.Notes, "grounded via a fallback version, not the claimed commit — an exact duplicate match is recorded as a lead, not a verdict")
+		}
 		v.Notes = append(v.Notes, "sandbox stage is not implemented yet")
 	}
 	if res.LLMUnavailable {
@@ -124,6 +132,14 @@ func Render(r report.Report, v report.Verdict) string {
 	b.WriteString("\n")
 	for _, c := range v.Claims {
 		fmt.Fprintf(&b, "• %s %s — %s\n", report.Printable(string(c.Kind)), report.Printable(c.Value), report.Printable(c.Evidence))
+	}
+	for _, d := range v.Duplicates {
+		kind, id := "report", d.ReportID
+		if id == "" {
+			kind, id = "advisory", d.AdvisoryID
+		}
+		fmt.Fprintf(&b, "• possible duplicate: %s %s (score %.2f) — %s\n",
+			kind, report.Printable(id), d.Score, report.Printable(d.Evidence))
 	}
 	for _, n := range v.Notes {
 		fmt.Fprintf(&b, "• %s\n", report.Printable(n))

@@ -220,3 +220,58 @@ func TestComposeDedupeRanButNoExactMatch(t *testing.T) {
 		t.Errorf("Duplicates = %+v, want the lead still recorded for visibility", v.Duplicates)
 	}
 }
+
+func TestComposeFallbackResolvedCleanDedupeMatchIsInconclusive(t *testing.T) {
+	r := report.Report{ID: "r1", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	res := StageResults{
+		GroundingRan: true, RefResolved: true, ResolvedViaFallback: true,
+		Claims:           []report.Claim{{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes}},
+		DedupeRan:        true,
+		DedupeExactMatch: true,
+		Duplicates:       []report.DupMatch{{ReportID: "prior", Score: 1.0}},
+	}
+	v := Compose(r, res)
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE: claims verified against a fallback commit can't anchor a duplicate match", v.Outcome)
+	}
+	if !strings.Contains(strings.Join(v.Notes, "\n"), "fallback version") {
+		t.Errorf("Notes = %q, want one explaining why the exact match was withheld", v.Notes)
+	}
+	if len(v.Duplicates) != 1 {
+		t.Errorf("Duplicates = %+v, want the match still recorded as a lead", v.Duplicates)
+	}
+}
+
+func TestComposeDedupeWithoutGroundingStillFires(t *testing.T) {
+	r := report.Report{ID: "r1", ClaimedRef: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	v := Compose(r, StageResults{DedupeRan: true, DedupeExactMatch: true})
+	if v.Outcome != report.OutcomeLikelyDuplicate {
+		t.Errorf("Outcome = %s, want LIKELY_DUPLICATE when grounding wasn't configured at all", v.Outcome)
+	}
+}
+
+func TestRenderDuplicates(t *testing.T) {
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1"}
+	v := report.Verdict{
+		ReportID: "R1",
+		Outcome:  report.OutcomeLikelyDuplicate,
+		Duplicates: []report.DupMatch{
+			{ReportID: "01PRIOR", Score: 1.0, Evidence: "fingerprint match: parser.peek (out-of-bounds read)"},
+			{AdvisoryID: "GO-2022-0603", Score: 1.0, Evidence: "OSV symbol match: parser.peek (GO-2022-0603)"},
+			{ReportID: "01EVIL\x1b[2J", Score: 0.95, Evidence: "fingerprint match: x.y (race\u202e)"},
+		},
+	}
+	out := Render(r, v)
+	for _, want := range []string{
+		"• possible duplicate: report 01PRIOR (score 1.00) — fingerprint match: parser.peek (out-of-bounds read)\n",
+		"• possible duplicate: advisory GO-2022-0603 (score 1.00) — OSV symbol match: parser.peek (GO-2022-0603)\n",
+		"• possible duplicate: report 01EVIL�[2J (score 0.95) — fingerprint match: x.y (race�)\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Render missing %q:\n%s", want, out)
+		}
+	}
+	if strings.ContainsAny(out, "\x1b\u202e") {
+		t.Fatalf("control characters leaked into output: %q", out)
+	}
+}
