@@ -427,16 +427,14 @@ func TestSaveAndFindEmbeddingsByRepo(t *testing.T) {
 	s, _ := openTemp(t)
 
 	for _, id := range []string{"r1", "r2"} {
-		if err := s.SaveReport(ctx, report.Report{ID: id, Repo: "owner/repo", ReceivedAt: time.Now()}); err != nil {
-			t.Fatal(err)
-		}
+		saveAnchor(t, s, id, "", report.OutcomeInconclusive)
 	}
 	vec := []float32{0.1, 0.2, 0.3}
 	if err := s.SaveEmbedding(ctx, "r1", "local-embed", vec); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.EmbeddingsByRepo(ctx, "owner/repo", "r2")
+	got, err := s.EmbeddingsByRepo(ctx, "owner/repo", "r2", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,12 +452,55 @@ func TestSaveAndFindEmbeddingsByRepo(t *testing.T) {
 	if err := s.SaveEmbedding(ctx, "r1", "local-embed", []float32{0.9}); err != nil {
 		t.Fatal(err)
 	}
-	got, err = s.EmbeddingsByRepo(ctx, "owner/repo", "r2")
+	got, err = s.EmbeddingsByRepo(ctx, "owner/repo", "r2", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got["r1"].Vector) != 1 {
 		t.Fatalf("EmbeddingsByRepo after overwrite = %+v, want a single-element vector", got)
+	}
+}
+
+func TestEmbeddingsByRepoExcludesSameSourceRef(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	saveAnchor(t, s, "first-run", "/corpus/real/a/report.md", report.OutcomeInconclusive)
+	if err := s.SaveEmbedding(ctx, "first-run", "local-embed", []float32{1}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.EmbeddingsByRepo(ctx, "owner/repo", "second-run", "/corpus/real/a/report.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["first-run"]; ok {
+		t.Error("EmbeddingsByRepo must exclude a prior report with the same SourceRef (a re-run of the same report)")
+	}
+}
+
+func TestEmbeddingsByRepoExcludesRejectedAnchors(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+
+	saveAnchor(t, s, "grounding-failed", "", report.OutcomeGroundingFailed)
+	if err := s.SaveEmbedding(ctx, "grounding-failed", "local-embed", []float32{1}); err != nil {
+		t.Fatal(err)
+	}
+	saveAnchor(t, s, "inconclusive", "", report.OutcomeInconclusive)
+	if err := s.SaveEmbedding(ctx, "inconclusive", "local-embed", []float32{1}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.EmbeddingsByRepo(ctx, "owner/repo", "new", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["grounding-failed"]; ok {
+		t.Error("EmbeddingsByRepo must exclude a GROUNDING_FAILED prior report")
+	}
+	if _, ok := got["inconclusive"]; !ok {
+		t.Error("EmbeddingsByRepo must keep a normal prior report")
 	}
 }
 

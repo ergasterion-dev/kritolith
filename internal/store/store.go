@@ -424,13 +424,36 @@ func (s *Store) SaveEmbedding(ctx context.Context, reportID, model string, vecto
 }
 
 // EmbeddingsByRepo returns every stored embedding for reports in repo
-// other than excludeReportID, keyed by report ID.
-func (s *Store) EmbeddingsByRepo(ctx context.Context, repo, excludeReportID string) (map[string]Embedding, error) {
+// other than excludeReportID, keyed by report ID. It excludes
+// excludeSourceRef (mirroring ClaimsByRepo — a re-run of the same
+// report under a reused data dir must never show its own earlier run
+// as an embedding lead) and reports whose verdict outcome makes them
+// untrustworthy anchors (GROUNDING_FAILED, NEEDS_INFO,
+// LIKELY_DUPLICATE), same as ClaimsByRepo. This can never change
+// dedupe's Outcome — an embedding lead never does — but keeping both
+// queries consistent avoids a confusing display-only discrepancy.
+//
+// Unlike ClaimsByRepo, the verdict join here is a LEFT JOIN: a report
+// with no verdict row at all (still mid-pipeline — e.g. two reports
+// processed concurrently by different job workers) still surfaces its
+// embedding rather than vanishing until its own verdict lands. An
+// embedding lead is display-only and never sets Outcome, so there is
+// no correctness reason to withhold it just because a verdict hasn't
+// been composed yet; requiring one would also make a report's own
+// just-saved embedding invisible on a later call for as long as its
+// own verdict remains unsaved, which the embedding lead's usefulness
+// as "maintainer visibility" doesn't call for.
+func (s *Store) EmbeddingsByRepo(ctx context.Context, repo, excludeReportID, excludeSourceRef string) (map[string]Embedding, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT e.report_id, e.model, e.dims, e.vector
 		FROM embeddings e
 		JOIN reports r ON r.id = e.report_id
-		WHERE r.repo = ? AND e.report_id != ?`, repo, excludeReportID)
+		LEFT JOIN verdicts v ON v.report_id = e.report_id
+		WHERE r.repo = ? AND e.report_id != ?
+			AND (? = '' OR r.source_ref != ?)
+			AND (v.outcome IS NULL OR v.outcome NOT IN (?, ?, ?))`,
+		repo, excludeReportID, excludeSourceRef, excludeSourceRef,
+		string(report.OutcomeGroundingFailed), string(report.OutcomeNeedsInfo), string(report.OutcomeLikelyDuplicate))
 	if err != nil {
 		return nil, fmt.Errorf("store: embeddings by repo %s: %w", repo, err)
 	}

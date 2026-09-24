@@ -54,7 +54,7 @@ func TestServiceDedupeExactFingerprintMatch(t *testing.T) {
 	defer s.Close()
 
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes, DeclPkgDir: "yaml", DeclReceiver: "parser", DeclName: "peek"},
 		{Kind: report.ClaimVulnClass, Value: "out-of-bounds read", Verified: report.TriUnknown},
 	}
 	saveReportWithClaims(t, s, "prior", "go-yaml/yaml", claims)
@@ -67,7 +67,7 @@ func TestServiceDedupeExactFingerprintMatch(t *testing.T) {
 	if len(matches) != 1 || matches[0].ReportID != "prior" || matches[0].Score != 1.0 {
 		t.Fatalf("matches = %+v, want a single exact match on report \"prior\"", matches)
 	}
-	if want := "fingerprint match: parser.peek (out-of-bounds read)"; matches[0].Evidence != want {
+	if want := "fingerprint match: parser.peek (out-of-bounds read) in yaml"; matches[0].Evidence != want {
 		t.Errorf("Evidence = %q, want %q", matches[0].Evidence, want)
 	}
 }
@@ -91,13 +91,13 @@ func TestServiceDedupeEmptyStoreNoMatch(t *testing.T) {
 	}
 }
 
-func TestServiceDedupeBareNameNeverMatches(t *testing.T) {
+func TestServiceDedupeUnresolvedClaimNeverMatches(t *testing.T) {
 	ctx := context.Background()
 	s := openTemp(t)
 	defer s.Close()
 
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "Read", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "Read", Verified: report.TriYes}, // no Decl* fields: unresolved or ambiguous
 		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	saveReportWithClaims(t, s, "prior", "owner/repo", claims)
@@ -105,7 +105,25 @@ func TestServiceDedupeBareNameNeverMatches(t *testing.T) {
 	svc := NewService(s, nil)
 	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "")
 	if exact || len(matches) != 0 {
-		t.Errorf("matches = %+v, exact = %v; two reports sharing only a bare function name must never match", matches, exact)
+		t.Errorf("matches = %+v, exact = %v; two reports sharing a claim with no resolved declaration identity must never match", matches, exact)
+	}
+}
+
+func TestServiceDedupeBareNameMatchesWhenUniquelyResolved(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	defer s.Close()
+
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "isOriginAllowed", Verified: report.TriYes, DeclPkgDir: "rest/internal/cors", DeclName: "isOriginAllowed"},
+		{Kind: report.ClaimVulnClass, Value: "CORS misconfiguration", Verified: report.TriUnknown},
+	}
+	saveReportWithClaims(t, s, "prior", "owner/repo", claims)
+
+	svc := NewService(s, nil)
+	matches, exact := svc.Dedupe(ctx, report.Report{ID: "new", Repo: "owner/repo"}, claims, "")
+	if !exact || len(matches) != 1 || matches[0].ReportID != "prior" {
+		t.Fatalf("matches = %+v, exact = %v; a bare-name claim resolved to one unambiguous declaration must fingerprint-match", matches, exact)
 	}
 }
 
@@ -116,7 +134,7 @@ func TestServiceDedupeDegradesOnClosedStore(t *testing.T) {
 
 	svc := NewService(s, nil)
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes, DeclPkgDir: "pkg", DeclReceiver: "T", DeclName: "M"},
 		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	matches, exact := svc.Dedupe(ctx, report.Report{ID: "r", Repo: "owner/repo"}, claims, "")
@@ -156,9 +174,7 @@ func TestServiceDedupeEmbeddingLeadNeverSetsExact(t *testing.T) {
 	s := openTemp(t)
 	defer s.Close()
 
-	if err := s.SaveReport(ctx, report.Report{ID: "prior", Repo: "owner/repo", ReceivedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
+	savePrior(t, s, report.Report{ID: "prior", Repo: "owner/repo"}, report.OutcomeInconclusive, nil)
 	if err := s.SaveEmbedding(ctx, "prior", "fake-embed", []float32{1, 0, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +203,7 @@ func TestServiceDedupeEmbeddingLeadNeverSetsExact(t *testing.T) {
 	}
 
 	// The new report's own embedding must now be stored too.
-	stored, err := s.EmbeddingsByRepo(ctx, "owner/repo", "prior")
+	stored, err := s.EmbeddingsByRepo(ctx, "owner/repo", "prior", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +270,7 @@ func TestServiceDedupeFingerprintStillExactAlongsideOSVLead(t *testing.T) {
 	defer s.Close()
 
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes, DeclPkgDir: "yaml", DeclReceiver: "parser", DeclName: "peek"},
 		{Kind: report.ClaimVulnClass, Value: "out-of-bounds read", Verified: report.TriUnknown},
 	}
 	saveReportWithClaims(t, s, "prior", "go-yaml/yaml", claims)
@@ -281,15 +297,15 @@ func TestServiceDedupeCollapsesMatchesPerIdentity(t *testing.T) {
 	// pairs against the same prior report, and 2 claims hitting the
 	// same OSV advisory.
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes},
-		{Kind: report.ClaimFunction, Value: "parser.peek", Verified: report.TriYes},
-		{Kind: report.ClaimFunction, Value: "(*parser).advance", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*parser).peek", Verified: report.TriYes, DeclPkgDir: "yaml", DeclReceiver: "parser", DeclName: "peek"},
+		{Kind: report.ClaimFunction, Value: "parser.peek", Verified: report.TriYes, DeclPkgDir: "yaml", DeclReceiver: "parser", DeclName: "peek"},
+		{Kind: report.ClaimFunction, Value: "(*parser).advance", Verified: report.TriYes, DeclPkgDir: "yaml", DeclReceiver: "parser", DeclName: "advance"},
 		{Kind: report.ClaimVulnClass, Value: "out-of-bounds read", Verified: report.TriUnknown},
 		{Kind: report.ClaimVulnClass, Value: "panic", Verified: report.TriUnknown},
 	}
 	saveReportWithClaims(t, s, "prior", "go-yaml/yaml", claims)
 	saveReportWithClaims(t, s, "other", "go-yaml/yaml", []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*parser).advance", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*parser).advance", Verified: report.TriYes, DeclPkgDir: "yaml", DeclReceiver: "parser", DeclName: "advance"},
 		{Kind: report.ClaimVulnClass, Value: "panic", Verified: report.TriUnknown},
 	})
 	if _, err := s.UpsertOSVEntry(ctx, "GO-2022-0603", "gopkg.in/yaml.v3", "2024-01-01T00:00:00Z", []byte(osvPeekAdvisory)); err != nil {
@@ -316,7 +332,7 @@ func TestServiceDedupeDeterministicOrder(t *testing.T) {
 	defer s.Close()
 
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes, DeclPkgDir: "pkg", DeclReceiver: "T", DeclName: "M"},
 		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	// Five equally-scored exact matches: which three survive, and in
@@ -344,7 +360,7 @@ func TestServiceDedupeSameSourceRefNeverSelfMatches(t *testing.T) {
 	defer s.Close()
 
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes, DeclPkgDir: "pkg", DeclReceiver: "T", DeclName: "M"},
 		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	const path = "/corpus/real/a/report.md"
@@ -363,7 +379,7 @@ func TestServiceDedupeRejectedPriorNeverAnchors(t *testing.T) {
 	defer s.Close()
 
 	claims := []report.Claim{
-		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes},
+		{Kind: report.ClaimFunction, Value: "(*T).M", Verified: report.TriYes, DeclPkgDir: "pkg", DeclReceiver: "T", DeclName: "M"},
 		{Kind: report.ClaimVulnClass, Value: "race", Verified: report.TriUnknown},
 	}
 	savePrior(t, s, report.Report{ID: "fabricated", Repo: "owner/repo"}, report.OutcomeGroundingFailed, claims)

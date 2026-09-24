@@ -81,16 +81,15 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 				for _, a := range mine {
 					for _, b := range theirs {
 						if a.matches(b) {
+							name := a.name
+							if a.receiver != "" {
+								name = a.receiver + "." + a.name
+							}
 							candidates = append(candidates, candidate{
 								match: report.DupMatch{
 									ReportID: reportID,
 									Score:    1.0,
-									Evidence: fmt.Sprintf("fingerprint match: %s.%s (%s)", func() string {
-										if a.receiver != "" {
-											return a.receiver
-										}
-										return a.pkgDir
-									}(), a.name, a.vulnClass),
+									Evidence: fmt.Sprintf("fingerprint match: %s (%s) in %s", name, a.vulnClass, a.pkgDir),
 								},
 								exact: true,
 							})
@@ -141,7 +140,7 @@ func (s *Service) Dedupe(ctx context.Context, r report.Report, claims []report.C
 		if err != nil {
 			slog.Default().Warn("dedupe: embedding failed, skipping embedding match", "report_id", r.ID, "error", err)
 		} else {
-			if others, err := s.store.EmbeddingsByRepo(ctx, r.Repo, r.ID); err != nil {
+			if others, err := s.store.EmbeddingsByRepo(ctx, r.Repo, r.ID, r.SourceRef); err != nil {
 				slog.Default().Warn("dedupe: could not load prior embeddings, skipping embedding match",
 					"report_id", r.ID, "error", err)
 			} else {
