@@ -20,6 +20,7 @@ const usage = `Usage: kritolith <command> [flags]
 Commands:
   check     verify a single report file
   eval      run the eval corpus and print the scoreboard
+  osv       manage the local OSV mirror (run "kritolith osv sync -h")
   version   print the version
 
 Run "kritolith <command> -h" for command flags.
@@ -44,6 +45,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runCheck(ctx, args[1:], stdout, stderr)
 	case "eval":
 		return runEval(ctx, args[1:], stdout, stderr)
+	case "osv":
+		return runOSV(ctx, args[1:], stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "kritolith %s\n", version)
 		return 0
