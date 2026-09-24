@@ -61,6 +61,27 @@ func TestClaimFingerprintsBareNameFingerprintsWhenUniquelyResolved(t *testing.T)
 	}
 }
 
+// TestClaimFingerprintsRootLevelPackage: ground.groundFunctionClaim
+// sets DeclPkgDir from path.Dir(declaration file), and path.Dir of a
+// root-level file ("main.go") is "." — not "" and not the package
+// name. A root-level declaration must still fingerprint correctly
+// with that realistic "." pkgDir, distinct from the "" that means
+// "unresolved" (see TestFingerprintMatches's emptyPkgDir case).
+func TestClaimFingerprintsRootLevelPackage(t *testing.T) {
+	claims := []report.Claim{
+		{Kind: report.ClaimFunction, Value: "handleRequest", Verified: report.TriYes, DeclPkgDir: ".", DeclName: "handleRequest"},
+		{Kind: report.ClaimVulnClass, Value: "SSRF"},
+	}
+	got := claimFingerprints("example/tool", claims)
+	if len(got) != 1 {
+		t.Fatalf("claimFingerprints = %+v, want exactly 1", got)
+	}
+	want := fingerprint{repo: "example/tool", pkgDir: ".", name: "handleRequest", vulnClass: "ssrf"}
+	if got[0] != want {
+		t.Errorf("claimFingerprints[0] = %+v, want %+v", got[0], want)
+	}
+}
+
 func TestFingerprintMatches(t *testing.T) {
 	a := fingerprint{repo: "r", pkgDir: "pkg", receiver: "T", name: "n", vulnClass: "v"}
 	tests := []struct {

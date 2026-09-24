@@ -3,6 +3,8 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -147,33 +149,80 @@ func TestOpenPragmasAndMigrations(t *testing.T) {
 	s2.Close()
 }
 
+// TestMigrationBackfillsExistingClaimsRows builds a database at the
+// pre-0002 schema (migration 0001_init.sql only, applied by hand) and
+// inserts a claims row directly with SQL using only the columns that
+// existed before 0002 added decl_pkg_dir/decl_receiver/decl_name —
+// simulating a claim saved by a binary that predates that migration.
+// It then opens the real Store against that database, which must
+// detect the older schema version and apply the pending 0002
+// migration, and confirms the pre-existing claims row comes back with
+// its new columns backfilled to ” via the migration's own
+// DEFAULT ” (not NULL, not a scan error).
 func TestMigrationBackfillsExistingClaimsRows(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	s, err := Open(ctx, filepath.Join(dir, "data"))
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawPath := filepath.Join(dataDir, dbFile)
+
+	raw, err := sql.Open("sqlite", rawPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	init0001, err := migrationFS.ReadFile("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, string(init0001)); err != nil {
+		t.Fatal(err)
+	}
+
 	r := sampleReport()
-	if err := s.SaveReport(ctx, r); err != nil {
+	pocJSON, err := json.Marshal(r.PoC)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a claim saved before this migration existed by inserting
-	// directly with only the pre-migration columns present in the
-	// INSERT — the new columns must still default to '' via the
-	// migration's DEFAULT '', not NULL or an error.
-	if err := s.SaveVerdict(ctx, report.Verdict{
-		ReportID: r.ID, Outcome: report.OutcomeInconclusive,
-		Claims: []report.Claim{{Kind: report.ClaimFunction, Value: "pkg.Old", Verified: report.TriYes}},
-	}); err != nil {
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO reports (id, source, source_ref, repo, claimed_ref, title, body, poc_json, received_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, string(r.Source), r.SourceRef, r.Repo, r.ClaimedRef, r.Title, r.Body, pocJSON, formatTime(r.ReceivedAt)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO verdicts (report_id, outcome, duplicates_json, repro_json, notes_json, draft_reply, signature, signed_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, string(report.OutcomeInconclusive), []byte("[]"), nil, []byte("[]"), "", nil, nil, formatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-0002 claims INSERT: no decl_pkg_dir/decl_receiver/decl_name —
+	// those columns don't exist in this schema yet.
+	if _, err := raw.ExecContext(ctx, `
+		INSERT INTO claims (report_id, kind, value, source, verified, evidence)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		r.ID, string(report.ClaimFunction), "pkg.Old", "deterministic", string(report.TriYes), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(ctx, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
 	got, err := s.GetVerdict(ctx, r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Claims) != 1 || got.Claims[0].DeclPkgDir != "" || got.Claims[0].DeclReceiver != "" || got.Claims[0].DeclName != "" {
-		t.Fatalf("claim = %+v, want empty decl_* fields for a claim saved with none set", got.Claims[0])
+		t.Fatalf("claim = %+v, want empty decl_* fields backfilled by migration 0002's DEFAULT ''", got.Claims[0])
 	}
 }
 

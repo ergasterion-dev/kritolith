@@ -371,6 +371,14 @@ func nilIfEmpty[T any](s []T) []T {
 // one is excluded so a match always points at the original report,
 // not along a chain of duplicates. A report with no verdict yet is
 // excluded too (the inner join drops it) — the conservative default.
+//
+// This must stay an INNER JOIN against verdicts, unlike
+// EmbeddingsByRepo's LEFT JOIN: a fingerprint match found here can set
+// Outcome to LIKELY_DUPLICATE, while an embedding lead never does (see
+// EmbeddingsByRepo's comment) — so a future maintainer touching one of
+// these two queries must not "align" it with the other, or a report
+// still mid-pipeline (no verdict row yet) could anchor a false
+// LIKELY_DUPLICATE match.
 func (s *Store) ClaimsByRepo(ctx context.Context, repo, excludeReportID, excludeSourceRef string) (map[string][]report.Claim, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.report_id, c.kind, c.value, c.source, c.verified, c.evidence, c.decl_pkg_dir, c.decl_receiver, c.decl_name

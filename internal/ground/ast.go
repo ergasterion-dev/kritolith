@@ -357,20 +357,55 @@ func findDeclaration(decls []declaration, value string) *declaration {
 
 // resolveUnique resolves value using the same matching rules as
 // findDeclaration (unchanged Verified/Evidence behavior for callers),
-// then reports whether the resolved declaration's (name, receiver)
-// pair is shared by any other declaration anywhere in decls. An
-// ambiguous resolution means grounding cannot be sure which
-// declaration the claim actually names — dedupe must not fingerprint
-// on it, even though the claim is still grounded normally (see
-// groundFunctionClaim in ground.go).
+// then reports whether more than one declaration in decls could
+// plausibly be what the claim means — mirroring exactly the candidate
+// set findDeclaration itself searches for this claim's shape, not just
+// the one declaration it happened to resolve to. An ambiguous
+// resolution means grounding cannot be sure which declaration the
+// claim actually names — dedupe must not fingerprint on it, even
+// though the claim is still grounded normally (see groundFunctionClaim
+// in ground.go).
 func resolveUnique(decls []declaration, value string) (d *declaration, ambiguous bool) {
 	d = findDeclaration(decls, value)
 	if d == nil {
 		return nil, false
 	}
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "(") {
+		// (*T).M / (T).M: candidates are exactly name==M, receiver==T.
+		recv, name := splitFunctionClaim(value)
+		count := 0
+		for i := range decls {
+			if decls[i].name == name && decls[i].receiver == recv {
+				count++
+			}
+		}
+		return d, count > 1
+	}
+	recv, name := splitFunctionClaim(value)
+	if recv == "" {
+		// Bare name: every declaration with this name, on any receiver,
+		// is a plausible candidate — findDeclaration's own bare-name
+		// branch considers all of them (plain function wins if one
+		// exists, otherwise the first method in slice order — an
+		// order-dependent guess among the rest).
+		count := 0
+		for i := range decls {
+			if decls[i].name == name {
+				count++
+			}
+		}
+		return d, count > 1
+	}
+	// pkg.Func: candidates are a plain function named Func, or a method
+	// named Func with receiver == pkg — the same set findDeclaration
+	// searches (this also closes the disclosed §2.4 limitation: a
+	// pkg.Func claim that could mean either a function or a method on
+	// receiver "pkg" is now correctly treated as ambiguous instead of
+	// silently picking whichever came first).
 	count := 0
 	for i := range decls {
-		if decls[i].name == d.name && decls[i].receiver == d.receiver {
+		if decls[i].name == name && (decls[i].receiver == recv || decls[i].receiver == "") {
 			count++
 		}
 	}

@@ -308,12 +308,28 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 // Verified: no, and a false GROUNDING_FAILED on a real report is the
 // worst bug this project can have.
 func groundFunctionClaim(c *report.Claim, l *lazyIndex) {
+	// Defense in depth: never carry forward a Decl* identity set by an
+	// upstream caller on the input claim. Every return path below either
+	// sets these explicitly or leaves them cleared.
+	c.DeclPkgDir, c.DeclReceiver, c.DeclName = "", "", ""
 	idx := l.get()
 	if d, ambiguous := resolveUnique(idx.decls, c.Value); d != nil {
 		c.Verified = report.TriYes
 		c.Evidence = fmt.Sprintf("declared at %s:%d", report.Printable(d.file), d.line)
 		if ambiguous {
 			c.Evidence += " (ambiguous name, cannot fingerprint)"
+			return
+		}
+		if idx.incomplete != "" || idx.unparsed > 0 {
+			// "This declaration is unique in the repo" is a claim about
+			// the WHOLE repo. If the scan didn't cover the whole tree
+			// (too many files, unreadable file, git submodules) or a
+			// file was rejected by go/parser (its declarations are
+			// simply missing from idx.decls, so a same-named twin in it
+			// is invisible to the uniqueness count above), we cannot
+			// trust "unique" enough to fingerprint on it. Mirrors why
+			// disproves() also refuses to disprove on an incomplete scan.
+			c.Evidence += " (repository scan incomplete, cannot fingerprint)"
 			return
 		}
 		c.DeclPkgDir = path.Dir(d.file)

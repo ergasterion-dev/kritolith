@@ -376,3 +376,45 @@ func TestResolveUniqueBareNameUniquelyResolved(t *testing.T) {
 		t.Errorf("resolveUnique = %v, %v, want a unique match", d, ambiguous)
 	}
 }
+
+func TestResolveUniqueBareNameAmbiguousAcrossReceivers(t *testing.T) {
+	// A bare method name declared on three different receivers, with no
+	// plain function of that name anywhere. findDeclaration's bare-name
+	// branch returns the first method in slice order as a guess — but
+	// every one of these three declarations is a plausible candidate for
+	// what the claim means, so resolveUnique must report ambiguous. The
+	// old (narrower) implementation only compared against the single
+	// (name, receiver) pair findDeclaration happened to resolve to
+	// (here, ("ServeHTTP", "Router")) and incorrectly reported false.
+	decls := []declaration{
+		{name: "ServeHTTP", receiver: "Router", file: "router.go", line: 10},
+		{name: "ServeHTTP", receiver: "Static", file: "static.go", line: 20},
+		{name: "ServeHTTP", receiver: "Proxy", file: "proxy.go", line: 30},
+	}
+	d, ambiguous := resolveUnique(decls, "ServeHTTP")
+	if d == nil {
+		t.Fatal("resolveUnique = nil, want a match (findDeclaration still finds one)")
+	}
+	if !ambiguous {
+		t.Error("a bare name matching methods on three different receivers must be reported ambiguous")
+	}
+}
+
+func TestResolveUniqueQualifiedAmbiguousFunctionOrMethod(t *testing.T) {
+	// "pkg.Func" is syntactically indistinguishable from "(Type).Method"
+	// with Type == "pkg" — findDeclaration matches either a plain
+	// function named Func, or a method named Func with receiver == pkg.
+	// When both exist, the claim is genuinely ambiguous about which one
+	// the reporter meant, even though findDeclaration itself picks one.
+	decls := []declaration{
+		{name: "Func", file: "yaml.go", line: 5},                           // plain function
+		{name: "Func", receiver: "yaml", file: "yaml/decode.go", line: 15}, // method on type "yaml"
+	}
+	d, ambiguous := resolveUnique(decls, "yaml.Func")
+	if d == nil {
+		t.Fatal("resolveUnique = nil, want a match (findDeclaration still finds one)")
+	}
+	if !ambiguous {
+		t.Error("a pkg.Func claim matching both a plain function and a method with receiver==pkg must be reported ambiguous")
+	}
+}

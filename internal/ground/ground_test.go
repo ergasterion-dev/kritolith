@@ -267,6 +267,70 @@ func TestGroundClaimsAmbiguousFunctionClaimNeverGetsDeclIdentity(t *testing.T) {
 	}
 }
 
+// TestGroundClaimsIncompleteScanNeverGetsDeclIdentity: "this declaration
+// is unique in the repo" is a claim about the WHOLE repo. When a file in
+// the repo can't be parsed (idx.unparsed > 0), that file's declarations
+// are simply missing from idx.decls, so a same-named twin hiding inside
+// it is invisible to resolveUnique's uniqueness count. A repo with one
+// valid Go file (a uniquely-named function, as far as the scan can see)
+// and one syntactically-broken .go file must not fingerprint the valid
+// file's claim, even though resolveUnique itself reports it unambiguous.
+func TestGroundClaimsIncompleteScanNeverGetsDeclIdentity(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@test.example")
+	run("config", "user.name", "test")
+	files := map[string]string{
+		"pkg1/a.go": "package pkg1\n\nfunc uniquelyNamed() {}\n",
+		"pkg2/b.go": "this is not go code {{{",
+	}
+	for name, content := range files {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "init")
+	commit := run("rev-parse", "HEAD")
+
+	m, err := OpenMirror(t.TempDir(), "owner/name", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
+	claims := []report.Claim{{Kind: report.ClaimFunction, Value: "pkg1.uniquelyNamed"}}
+	grounded, resolved, _, _, _, err := groundClaims(context.Background(), m, r, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved {
+		t.Fatal("want resolved = true")
+	}
+	c := grounded[0]
+	if c.Verified != report.TriYes {
+		t.Fatalf("claim = %+v, want Verified: yes (the valid file's declaration is still found)", c)
+	}
+	if c.DeclPkgDir != "" || c.DeclReceiver != "" || c.DeclName != "" {
+		t.Errorf("claim = %+v, want no declaration identity when the repo scan is incomplete", c)
+	}
+	if !strings.Contains(c.Evidence, "incomplete") {
+		t.Errorf("Evidence = %q, want it to mention the scan being incomplete", c.Evidence)
+	}
+}
+
 func TestGroundClaimsLeavesOtherKindsAlone(t *testing.T) {
 	origin, commit := newGroundTestOrigin(t)
 	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
