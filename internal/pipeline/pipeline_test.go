@@ -204,14 +204,15 @@ type fakeGrounder struct {
 	claims      []report.Claim // if non-nil, returned as-is instead of the input claims
 	resolved    bool
 	resolvedRef string
+	viaFallback bool
 }
 
-func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ([]report.Claim, bool, string) {
+func (g fakeGrounder) Ground(ctx context.Context, r report.Report, claims []report.Claim) ([]report.Claim, bool, string, bool) {
 	out := claims
 	if g.claims != nil {
 		out = g.claims
 	}
-	return out, g.resolved, g.resolvedRef
+	return out, g.resolved, g.resolvedRef, g.viaFallback
 }
 
 func TestRunGroundingFailedOutcome(t *testing.T) {
@@ -248,5 +249,18 @@ func TestRunWithNoGrounderConfiguredIsUnchanged(t *testing.T) {
 	}
 	if v.Outcome != report.OutcomeInconclusive {
 		t.Errorf("Outcome = %s, want INCONCLUSIVE (no grounder configured must behave exactly like before Week 3)", v.Outcome)
+	}
+}
+
+func TestRunGroundingViaFallbackNeverGroundingFails(t *testing.T) {
+	fs := &fakeStore{}
+	r := report.Report{ID: "R1", Repo: "o/n", ClaimedRef: "e1fcd82abba34df74614020343be8eb1fe85f0d9", Body: "x"}
+	failed := []report.Claim{{Kind: report.ClaimFunction, Value: "parseThing", Verified: report.TriNo}}
+	v, err := New(fs).WithGround(fakeGrounder{claims: failed, resolved: true, resolvedRef: "abc123", viaFallback: true}).Run(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE when grounding resolved only a fallback version", v.Outcome)
 	}
 }

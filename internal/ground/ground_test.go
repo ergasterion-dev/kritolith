@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
+	"github.com/ergasterion-dev/kritolith/internal/verdict"
 )
 
 func newGroundTestOrigin(t *testing.T) (dir, commit string) {
@@ -59,7 +60,7 @@ func TestGroundClaimsFileAndFunction(t *testing.T) {
 		{Kind: report.ClaimFunction, Value: "http2.parseHeaders"},
 		{Kind: report.ClaimFunction, Value: "http2.parseHeader"}, // invented, close to parseHeaders
 	}
-	grounded, resolved, resolvedCommit, err := groundClaims(context.Background(), m, r, claims)
+	grounded, resolved, resolvedCommit, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestGroundClaimsRefDoesNotResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: "totally-unknown"}
-	grounded, resolved, _, err := groundClaims(context.Background(), m, r, []report.Claim{{Kind: report.ClaimFile, Value: "main.go", Verified: report.TriUnknown}})
+	grounded, resolved, _, _, err := groundClaims(context.Background(), m, r, []report.Claim{{Kind: report.ClaimFile, Value: "main.go", Verified: report.TriUnknown}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestGroundClaimsLineClaim(t *testing.T) {
 		{Kind: report.ClaimLine, Value: "main.go:3"},    // inside func main
 		{Kind: report.ClaimLine, Value: "main.go:9999"}, // out of range
 	}
-	grounded, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +153,54 @@ func TestGroundClaimsFallsBackToVersionClaims(t *testing.T) {
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: "does-not-resolve"}
 	claims := []report.Claim{{Kind: report.ClaimVersion, Value: "v2.0.0"}}
-	_, resolved, resolvedCommit, err := groundClaims(context.Background(), m, r, claims)
+	_, resolved, resolvedCommit, viaFallback, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resolved || resolvedCommit != commit {
-		t.Fatalf("resolved = %v, commit = %q, want true, %q", resolved, resolvedCommit, commit)
+	if !resolved || resolvedCommit != commit || !viaFallback {
+		t.Fatalf("resolved = %v, commit = %q, viaFallback = %v, want true, %q, true", resolved, resolvedCommit, viaFallback, commit)
+	}
+}
+
+// Final-review I3, end to end: the claimed ref doesn't resolve, a
+// fallback version does, and a hard claim is genuinely missing at that
+// fallback commit. The verdict must be INCONCLUSIVE, not
+// GROUNDING_FAILED; the same claim at a directly resolved ref still
+// fails grounding.
+func TestServiceGroundFallbackCapsGroundingFailed(t *testing.T) {
+	origin, commit := newGroundTestOrigin(t)
+	gitIn(t, origin, "tag", "v2.0.0")
+	s := NewService(t.TempDir())
+	s.originURL = func(string) string { return origin }
+	claims := func() []report.Claim {
+		return []report.Claim{
+			{Kind: report.ClaimFile, Value: "internal/http2/missing.go", Verified: report.TriUnknown},
+			{Kind: report.ClaimVersion, Value: "v2.0.0"},
+		}
+	}
+	ctx := context.Background()
+
+	fb := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: strings.Repeat("f", 40)}
+	grounded, resolved, ref, viaFallback := s.Ground(ctx, fb, claims())
+	if !resolved || ref != commit || !viaFallback {
+		t.Fatalf("fallback Ground = %v, %q, %v, want true, %q, true", resolved, ref, viaFallback, commit)
+	}
+	if grounded[0].Verified != report.TriNo {
+		t.Fatalf("missing file at the fallback commit: Verified = %s, want no", grounded[0].Verified)
+	}
+	v := verdict.Compose(fb, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved, ResolvedRef: ref, ResolvedViaFallback: viaFallback})
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("fallback Outcome = %s, want INCONCLUSIVE", v.Outcome)
+	}
+
+	direct := report.Report{ID: "R2", Repo: "owner/name", ClaimedRef: commit}
+	grounded, resolved, ref, viaFallback = s.Ground(ctx, direct, claims())
+	if !resolved || viaFallback {
+		t.Fatalf("direct Ground = %v, %v, want true, false", resolved, viaFallback)
+	}
+	v = verdict.Compose(direct, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved, ResolvedRef: ref, ResolvedViaFallback: viaFallback})
+	if v.Outcome != report.OutcomeGroundingFailed {
+		t.Errorf("direct Outcome = %s, want GROUNDING_FAILED", v.Outcome)
 	}
 }
 
@@ -169,7 +212,7 @@ func TestGroundClaimsLeavesOtherKindsAlone(t *testing.T) {
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
 	claims := []report.Claim{{Kind: report.ClaimVulnClass, Value: "dos", Verified: report.TriUnknown}}
-	grounded, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}

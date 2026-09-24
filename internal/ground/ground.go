@@ -23,11 +23,13 @@ const (
 // ClaimVersion values already in claims) and grounds every
 // file/function/line claim against the resolved commit. It returns
 // the same claims with Verified and Evidence updated, plus whether a
-// ref resolved and which commit it resolved to. An error here means
+// ref resolved, which commit it resolved to, and whether that commit
+// came from a fallback version rather than the claimed ref itself (see
+// Mirror.EnsureAndResolve). An error here means
 // the mirror itself couldn't be used (clone/fetch failure); callers
 // must degrade to "not resolved" rather than propagate it as a
 // pipeline failure (see Task 5's Service).
-func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []report.Claim) (grounded []report.Claim, refResolved bool, resolvedCommit string, err error) {
+func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []report.Claim) (grounded []report.Claim, refResolved bool, resolvedCommit string, viaFallback bool, err error) {
 	var versions []string
 	for _, c := range claims {
 		if c.Kind == report.ClaimVersion {
@@ -37,12 +39,12 @@ func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []repo
 			}
 		}
 	}
-	commit, resolved, err := m.EnsureAndResolve(ctx, r.ClaimedRef, versions)
+	commit, resolved, viaFallback, err := m.EnsureAndResolve(ctx, r.ClaimedRef, versions)
 	if err != nil {
-		return claims, false, "", err
+		return claims, false, "", false, err
 	}
 	if !resolved {
-		return claims, false, "", nil
+		return claims, false, "", false, nil
 	}
 
 	idx := newLazyIndex(ctx, m, commit)
@@ -58,7 +60,7 @@ func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []repo
 			groundLineClaim(ctx, m, commit, &out[i], idx.get().decls)
 		}
 	}
-	return out, true, commit, nil
+	return out, true, commit, viaFallback, nil
 }
 
 // symbolIndex is everything grounding learned from one scan of the
@@ -258,7 +260,10 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 	ok, err := m.FileExists(ctx, commit, c.Value)
 	short := shortSHA(commit)
 	if err != nil {
-		return // leave Verified/Evidence as extraction left them
+		// A failed check is not proof of absence: never "no" here.
+		c.Verified = report.TriUnknown
+		c.Evidence = fmt.Sprintf("could not check the path at %s, so its absence isn't proven", short)
+		return
 	}
 	if ok {
 		c.Verified = report.TriYes
@@ -330,7 +335,8 @@ func groundFunctionClaim(c *report.Claim, l *lazyIndex) {
 
 // disproves reports whether a function claim that matched no
 // declaration is provably false, and if not, why not. Grounding has
-// no import resolution, so only two shapes can be disproved:
+// no import resolution, so only two shapes can be disproved, both of
+// which bind the name to this repository:
 //
 //   - "(*T).M" / "(T).M" where T is a type declared in this
 //     repository with a closed method set (no embedding, not an alias,
@@ -343,14 +349,14 @@ func groundFunctionClaim(c *report.Claim, l *lazyIndex) {
 //     repository's source ("http2.parseHeader"). Unexported names
 //     can't be reached from another package, so the claim is about
 //     this repository's pkg.
-//   - a bare unexported "name" that appears nowhere in the
-//     repository's source. An unqualified unexported name can only
-//     mean this codebase.
 //
 // Every other qualified "x.Y" stays unknown: x may be an imported
 // package ("protowire.ConsumeVarint", "sync.Pool"), a field or a
-// variable ("URL.Scheme", "token.Data"). A bare exported "Name" stays
-// unknown too: it may belong to another package. And nothing is
+// variable ("URL.Scheme", "token.Data"). A bare "name" stays unknown
+// too, exported or not: reporters describe call chains through code
+// they didn't write ("json.Unmarshal recurses into literalStore"), so
+// an unqualified name may be a function inside the standard library or
+// a dependency, which grounding never scans. And nothing is
 // disproved when the name appears anywhere as an identifier (it's a
 // real field, type, var, const, local, or call into a dependency —
 // "ChunkSize", "MaxBitLen", "paddingLength" — just not a function
@@ -396,10 +402,8 @@ func (idx *symbolIndex) disproves(value string) (bool, string) {
 			return false, fmt.Sprintf("%s is also the name of imported package %s", report.Printable(recv), report.Printable(ext))
 		}
 		return true, ""
-	case isExported(name):
-		return false, "an exported name may belong to another package"
 	default:
-		return true, ""
+		return false, "an unqualified name may be a function in the standard library or a dependency (reporters name functions along a call chain through code they didn't write), so its absence here isn't proof"
 	}
 }
 

@@ -133,3 +133,30 @@ func TestComposeStillAppendsLLMUnavailableNote(t *testing.T) {
 		t.Errorf("Notes = %v, want the LLM-unavailable note to still be appended alongside a GROUNDING_FAILED outcome", v.Notes)
 	}
 }
+
+// Final-review I3: a hard-claim failure against a commit that came
+// from a fallback version, not the claimed ref, is never a rejection.
+func TestComposeFallbackResolvedHardFailureIsInconclusive(t *testing.T) {
+	for _, kind := range []report.ClaimKind{report.ClaimFile, report.ClaimFunction} {
+		claims := []report.Claim{{Kind: kind, Value: "x", Verified: report.TriNo}}
+		r := report.Report{ID: "R1", ClaimedRef: "e1fcd82abba34df74614020343be8eb1fe85f0d9"}
+		v := Compose(r, StageResults{Claims: claims, GroundingRan: true, RefResolved: true, ResolvedViaFallback: true})
+		if v.Outcome != report.OutcomeInconclusive {
+			t.Errorf("kind %s via fallback: Outcome = %s, want INCONCLUSIVE", kind, v.Outcome)
+		}
+		found := false
+		for _, n := range v.Notes {
+			if strings.Contains(n, "fallback version") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("kind %s via fallback: Notes = %v, want the fallback explanation", kind, v.Notes)
+		}
+		// The normal path is unaffected.
+		direct := Compose(r, StageResults{Claims: claims, GroundingRan: true, RefResolved: true})
+		if direct.Outcome != report.OutcomeGroundingFailed {
+			t.Errorf("kind %s direct: Outcome = %s, want GROUNDING_FAILED", kind, direct.Outcome)
+		}
+	}
+}

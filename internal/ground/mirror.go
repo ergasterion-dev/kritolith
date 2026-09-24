@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
@@ -52,9 +54,71 @@ func (m *Mirror) exists() bool {
 	return err == nil && fi.IsDir()
 }
 
-func (m *Mirror) runGit(ctx context.Context, dir string, args ...string) (string, error) {
+// networkTimeout is a hard cap on each clone or fetch — the only
+// operations here that touch the network. The CLI's context carries no
+// deadline, so without it a remote that trickles data forever would
+// hang a check or eval run. It is generous because a first mirror clone
+// of a large repository legitimately takes many minutes (cosmos-sdk
+// takes over ten); a stalled transfer is caught much sooner by
+// networkStallArgs. It is a var so tests can shorten it.
+var networkTimeout = 30 * time.Minute
+
+// networkStallArgs makes git itself abort an HTTP transfer that stays
+// below 1 KiB/s for two minutes, so a dead connection fails fast
+// without the hard cap having to cut off a slow but healthy clone.
+var networkStallArgs = []string{"-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedTime=120"}
+
+// waitDelay bounds how long a git process's I/O may outlive it after
+// its context is done: a killed git can leave a helper
+// (git-remote-https) holding the output pipes open, and without a
+// WaitDelay, Wait would block on that helper instead of returning.
+const waitDelay = 10 * time.Second
+
+// strippedGitEnv lists inherited variables that could redirect a git
+// command to a repository, index, or object store other than the one
+// cmd.Dir names — for example when Kritolith runs inside a git hook,
+// which exports GIT_DIR. cmd.Dir must be the only thing that decides
+// which repository git operates on.
+var strippedGitEnv = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_NAMESPACE",
+}
+
+// gitEnv returns environ with strippedGitEnv removed and hardening
+// settings appended: GIT_TERMINAL_PROMPT=0 makes git fail instead of
+// prompting on the terminal for credentials (a private or nonexistent
+// GitHub repo answers 401, and a prompt would hang the run), and
+// GIT_CONFIG_NOSYSTEM=1 keeps the machine-wide gitconfig out of a
+// security tool's git calls.
+func gitEnv(environ []string) []string {
+	env := make([]string, 0, len(environ)+2)
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(strippedGitEnv, name) || name == "GIT_TERMINAL_PROMPT" || name == "GIT_CONFIG_NOSYSTEM" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+}
+
+// gitCommand builds every git subprocess this package runs, so the
+// environment hardening and WaitDelay apply uniformly.
+func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitEnv(os.Environ())
+	cmd.WaitDelay = waitDelay
+	return cmd
+}
+
+func (m *Mirror) runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := gitCommand(ctx, dir, args...)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -64,16 +128,40 @@ func (m *Mirror) runGit(ctx context.Context, dir string, args ...string) (string
 	return out.String(), nil
 }
 
+// clone creates the mirror. It clones into a temporary sibling
+// directory and renames it into place only on success, so a clone that
+// is interrupted (timeout, cancellation, a killed process) never leaves
+// a half-written directory at m.path for a later run to mistake for a
+// usable mirror.
 func (m *Mirror) clone(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
+	parent := filepath.Dir(m.path)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("ground: mkdir: %w", err)
 	}
-	_, err := m.runGit(ctx, "", "clone", "--mirror", "--", m.origin, m.path)
-	return err
+	tmp, err := os.MkdirTemp(parent, filepath.Base(m.path)+".clone-*")
+	if err != nil {
+		return fmt.Errorf("ground: mkdir: %w", err)
+	}
+	defer os.RemoveAll(tmp) // no-op once renamed
+	ctx, cancel := context.WithTimeout(ctx, networkTimeout)
+	defer cancel()
+	args := append(slices.Clone(networkStallArgs), "clone", "--mirror", "--", m.origin, tmp)
+	if _, err := m.runGit(ctx, "", args...); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, m.path); err != nil {
+		if m.exists() {
+			return nil // another run created the mirror first; use it
+		}
+		return fmt.Errorf("ground: install mirror: %w", err)
+	}
+	return nil
 }
 
 func (m *Mirror) fetch(ctx context.Context) error {
-	_, err := m.runGit(ctx, m.path, "fetch", "--prune", "origin")
+	ctx, cancel := context.WithTimeout(ctx, networkTimeout)
+	defer cancel()
+	_, err := m.runGit(ctx, m.path, append(slices.Clone(networkStallArgs), "fetch", "--prune", "origin")...)
 	return err
 }
 
@@ -85,36 +173,53 @@ func (m *Mirror) resolve(ctx context.Context, ref string) (string, bool) {
 	return strings.TrimSpace(out), true
 }
 
-// EnsureAndResolve resolves ref to a full commit SHA. It clones the
-// mirror on first use, tries to resolve locally first, and only
-// fetches (once) if that fails and the mirror wasn't just created. If
-// ref itself never resolves, it tries each of fallbackVersions in
-// order as a ref, with the same policy. resolved is false, with no
-// error, if nothing resolved at all. Every candidate (ref and each
-// fallback) is validated with report.ValidateRef before it ever
-// reaches a git command argument; an invalid candidate is skipped, not
-// treated as a hard error.
-func (m *Mirror) EnsureAndResolve(ctx context.Context, ref string, fallbackVersions []string) (commit string, resolved bool, err error) {
+// EnsureAndResolve resolves ref — the report's claimed ref — to a full
+// commit SHA, cloning the mirror on first use. The claimed ref always
+// gets the first and best chance to resolve, and only if it can't
+// resolve even after the mirror is fresh are fallbackVersions tried:
+//
+//  1. Resolve ref alone against the local mirror. A hit is trusted
+//     immediately only if ref is a full 40-hex SHA (immutable) or the
+//     mirror was cloned by this call (already current). A branch or
+//     tag name resolved from an older mirror may be stale, so it isn't
+//     trusted yet.
+//  2. Otherwise, unless the mirror was just cloned, fetch once and
+//     resolve ref alone again. A claimed commit newer than the mirror
+//     is found here, instead of losing to a fallback version that
+//     happened to resolve against the stale mirror.
+//  3. Only then try each of fallbackVersions, in order.
+//
+// viaFallback is true when the commit came from a fallback version
+// rather than ref: grounding then checks claims against a commit the
+// reporter didn't name exactly, which callers must not treat as strong
+// enough to reject a report on. resolved is false, with no error, if
+// nothing resolved at all. Every candidate (ref and each fallback) is
+// validated with report.ValidateRef before it reaches a git command
+// argument; an invalid candidate is skipped, not a hard error.
+func (m *Mirror) EnsureAndResolve(ctx context.Context, ref string, fallbackVersions []string) (commit string, resolved, viaFallback bool, err error) {
 	freshClone := false
 	if !m.exists() {
 		if err := m.clone(ctx); err != nil {
-			return "", false, fmt.Errorf("ground: clone: %w", err)
+			return "", false, false, fmt.Errorf("ground: clone: %w", err)
 		}
 		freshClone = true
 	}
-	candidates := append([]string{ref}, fallbackVersions...)
-	if sha, ok := m.tryResolve(ctx, candidates); ok {
-		return sha, true, nil
+	primary := []string{ref}
+	if sha, ok := m.tryResolve(ctx, primary); ok && (freshClone || report.IsFullSHA(ref)) {
+		return sha, true, false, nil
 	}
 	if !freshClone {
 		if err := m.fetch(ctx); err != nil {
-			return "", false, fmt.Errorf("ground: fetch: %w", err)
+			return "", false, false, fmt.Errorf("ground: fetch: %w", err)
 		}
-		if sha, ok := m.tryResolve(ctx, candidates); ok {
-			return sha, true, nil
+		if sha, ok := m.tryResolve(ctx, primary); ok {
+			return sha, true, false, nil
 		}
 	}
-	return "", false, nil
+	if sha, ok := m.tryResolve(ctx, fallbackVersions); ok {
+		return sha, true, true, nil
+	}
+	return "", false, false, nil
 }
 
 func (m *Mirror) tryResolve(ctx context.Context, candidates []string) (string, bool) {
@@ -132,17 +237,51 @@ func (m *Mirror) tryResolve(ctx context.Context, candidates []string) (string, b
 	return "", false
 }
 
-// FileExists reports whether path exists as a blob at commit. It
-// never treats a checked-out ref as ambiguous: EnsureAndResolve has
-// already confirmed commit itself resolves, so a cat-file failure here
-// only ever means the path doesn't exist in that tree, not a
-// network/transient error.
+// FileExists reports whether path exists in the tree at commit. found
+// is false with a nil error only when git positively reports the path
+// missing from a tree it could read. Every other outcome — an invalid
+// path, a commit whose tree can't be read, a cancelled or timed-out
+// context, a corrupted mirror, unexpected output — is returned as an
+// error, never as "not found": callers use a false result to prove a
+// file claim false.
+//
+// `git cat-file -e` can't be used for this: it exits 128 both for a
+// path missing from the tree and for a real failure (a missing commit,
+// a corrupt object). `git cat-file --batch-check` instead prints
+// "<name> missing" for an absent object and exits 0, and exits
+// non-zero only on a real failure. The commit's tree is checked in the
+// same call, so a missing commit can't be misread as a missing path.
 func (m *Mirror) FileExists(ctx context.Context, commit, path string) (bool, error) {
 	if err := ValidateClaimPath(path); err != nil {
+		return false, err
+	}
+	if strings.ContainsAny(path, "\n\r") || strings.ContainsAny(commit, "\n\r") {
+		return false, fmt.Errorf("ground: invalid path %q", path)
+	}
+	treeName := commit + "^{tree}"
+	pathName := commit + ":" + path
+	cmd := gitCommand(ctx, m.path, "cat-file", "--batch-check")
+	cmd.Stdin = strings.NewReader(treeName + "\n" + pathName + "\n")
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("ground: check %s at %s: %w: %s", report.Printable(path), commit, err, strings.TrimSpace(errBuf.String()))
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		return false, fmt.Errorf("ground: check %s at %s: unexpected cat-file output", report.Printable(path), commit)
+	}
+	if f := strings.Fields(lines[0]); len(f) != 3 || f[1] != "tree" {
+		return false, fmt.Errorf("ground: check %s at %s: commit tree unreadable", report.Printable(path), commit)
+	}
+	if lines[1] == pathName+" missing" {
 		return false, nil
 	}
-	_, err := m.runGit(ctx, m.path, "cat-file", "-e", commit+":"+path)
-	return err == nil, nil
+	if f := strings.Fields(lines[1]); len(f) == 3 {
+		return true, nil
+	}
+	return false, fmt.Errorf("ground: check %s at %s: unexpected cat-file output", report.Printable(path), commit)
 }
 
 // blobSize returns the byte size of the blob at commit:path via
@@ -224,8 +363,7 @@ func (m *Mirror) ListGoFiles(ctx context.Context, commit string) (files []string
 // proving a claim false, so a git failure must not be able to
 // masquerade as absence.
 func (m *Mirror) ContainsWord(ctx context.Context, commit, name string) (found bool, err error) {
-	cmd := exec.CommandContext(ctx, "git", "grep", "-q", "-w", "-F", "-e", name, commit, "--")
-	cmd.Dir = m.path
+	cmd := gitCommand(ctx, m.path, "grep", "-q", "-w", "-F", "-e", name, commit, "--")
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	runErr := cmd.Run()

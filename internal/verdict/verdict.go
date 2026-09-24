@@ -33,14 +33,23 @@ type StageResults struct {
 	// ResolvedRef is the commit grounding actually checked claims
 	// against, if RefResolved.
 	ResolvedRef string
+	// ResolvedViaFallback is true when the claimed ref itself didn't
+	// resolve and grounding checked claims against a fallback version
+	// mentioned in the report instead. That commit isn't the one the
+	// reporter named, and a short hex-looking "version" can coincidentally
+	// resolve to an unrelated commit, so a hard-claim failure against it
+	// is never strong enough to reject the report on.
+	ResolvedViaFallback bool
 }
 
 // Compose builds the verdict from the stage results available so far.
 // Precedence: no ref given -> NEEDS_INFO; a ref given but grounding
 // couldn't resolve it (or any fallback) -> NEEDS_INFO; a hard claim
 // (file or function) that grounding found missing -> GROUNDING_FAILED,
-// never on a line-only mismatch; otherwise INCONCLUSIVE, since dedupe
-// and sandbox aren't implemented yet.
+// never on a line-only mismatch, and never when grounding resolved only
+// a fallback version rather than the claimed ref (that case is
+// INCONCLUSIVE); otherwise INCONCLUSIVE, since dedupe and sandbox
+// aren't implemented yet.
 func Compose(r report.Report, res StageResults) report.Verdict {
 	v := report.Verdict{ReportID: r.ID, Claims: res.Claims}
 	switch {
@@ -50,6 +59,9 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 	case res.GroundingRan && !res.RefResolved:
 		v.Outcome = report.OutcomeNeedsInfo
 		v.Notes = append(v.Notes, "claimed ref did not resolve to a commit in the repository")
+	case res.GroundingRan && hardClaimFailed(res.Claims) && res.ResolvedViaFallback:
+		v.Outcome = report.OutcomeInconclusive
+		v.Notes = append(v.Notes, "grounded via a fallback version, not the claimed commit — treating a hard-claim failure as inconclusive rather than a rejection")
 	case res.GroundingRan && hardClaimFailed(res.Claims):
 		v.Outcome = report.OutcomeGroundingFailed
 		v.Notes = append(v.Notes, "a claimed file or function does not exist at the resolved commit")

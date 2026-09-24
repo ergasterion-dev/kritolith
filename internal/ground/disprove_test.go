@@ -129,6 +129,7 @@ func TestGroundFunctionClaimsDisproveOnlyWhenProvable(t *testing.T) {
 		{"TrustForwardedHost", report.TriUnknown, "bare exported names may belong to another package"},
 		{"(*Wrapper).TryLockUnsafe", report.TriUnknown, "Wrapper embeds a type, so the method may be promoted"},
 		{"(*Request).Missing", report.TriUnknown, "receiver type not declared in the repo"},
+		{"lexInlineTableDeep", report.TriUnknown, "bare unexported names may be a stdlib/dependency function named in a call chain (final-review C2)"},
 		{"(*Framer).ReadFrame2", report.TriNo, "closed type, name nowhere in the repo"},
 		// Declared: yes.
 		{"AddMut", report.TriYes, "bare method name (go-2024-3279)"},
@@ -136,7 +137,7 @@ func TestGroundFunctionClaimsDisproveOnlyWhenProvable(t *testing.T) {
 		{"http2.parseHeaders", report.TriYes, "declared function"},
 		// Fabricated-corpus shapes: must stay "no".
 		{"(*Framer).ReadContinuationUnsafe", report.TriNo, "invented method on a closed repo type (fab-001)"},
-		{"lexInlineTableDeep", report.TriNo, "invented bare unexported function (fab-007)"},
+		{"http2.lexInlineTableDeep", report.TriNo, "invented unexported function qualified by a repo package"},
 		{"http2.parseHeader", report.TriNo, "invented unexported function in a repo package (CLAUDE.md example)"},
 	}
 	var claims []report.Claim
@@ -144,7 +145,7 @@ func TestGroundFunctionClaimsDisproveOnlyWhenProvable(t *testing.T) {
 		claims = append(claims, report.Claim{Kind: report.ClaimFunction, Value: tt.value, Verified: report.TriUnknown})
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, resolved, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, resolved, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil || !resolved {
 		t.Fatalf("groundClaims: resolved=%v err=%v", resolved, err)
 	}
@@ -169,7 +170,7 @@ func TestGroundFileClaimPathSuffix(t *testing.T) {
 		{Kind: report.ClaimFile, Value: "http2/frame.go"},  // exact
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,9 +194,9 @@ func TestGroundFunctionClaimIncompleteScanNeverDisproves(t *testing.T) {
 	old := maxReadBytes
 	maxReadBytes = 16 // every file is "too large": the scan is incomplete
 	defer func() { maxReadBytes = old }()
-	claims := []report.Claim{{Kind: report.ClaimFunction, Value: "lexInlineTableDeep"}}
+	claims := []report.Claim{{Kind: report.ClaimFunction, Value: "http2.parseHeader"}}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestComposeOnCorpusShapes(t *testing.T) {
 				claims = append(claims, report.Claim{Kind: report.ClaimFunction, Value: v, Verified: report.TriUnknown})
 			}
 			r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-			grounded, resolved, ref, err := groundClaims(context.Background(), m, r, claims)
+			grounded, resolved, ref, _, err := groundClaims(context.Background(), m, r, claims)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -261,14 +262,14 @@ func TestGroundFunctionClaimUnparseableFile(t *testing.T) {
 		{"(*Framer).ReadContinuationUnsafe", report.TriUnknown},
 		{"http2.parseHeader", report.TriUnknown},
 		{"mentionedInBrokenFile", report.TriUnknown},
-		{"lexInlineTableDeep", report.TriNo}, // bare-name disproof only needs identifiers
+		{"lexInlineTableDeep", report.TriUnknown}, // bare names are never disproved
 	}
 	var claims []report.Claim
 	for _, tt := range tests {
 		claims = append(claims, report.Claim{Kind: report.ClaimFunction, Value: tt.value})
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, _, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +307,7 @@ func groundValues(t *testing.T, files map[string]string, kind report.ClaimKind, 
 		claims = append(claims, report.Claim{Kind: kind, Value: v, Verified: report.TriUnknown})
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
-	grounded, resolved, _, err := groundClaims(context.Background(), m, r, claims)
+	grounded, resolved, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil || !resolved {
 		t.Fatalf("groundClaims: resolved=%v err=%v", resolved, err)
 	}
@@ -340,14 +341,16 @@ func TestGroundFunctionClaimNameOnlyInNonIdentifierText(t *testing.T) {
 		"web/config.go":     "package web\n\ntype Config struct {\n\tAllow bool `json:\"allowPrivileged\" yaml:\"readTimeout\"`\n}\n\nconst sink = \"el.innerHTML = x\"\n",
 		"web/static/app.js": "window.location = params.redirectUrl;\nel.innerHTML = msg;\n",
 	})
+	// Qualified by the repo's own package "web" so each claim reaches
+	// the tracked-text check (bare names are never disproved at all).
 	grounded := groundValues(t, files, report.ClaimFunction,
-		[]string{"allowPrivileged", "readTimeout", "innerHTML", "redirectUrl", "lexInlineTableDeep"}, nil)
+		[]string{"web.allowPrivileged", "web.readTimeout", "web.innerHTML", "web.redirectUrl", "web.lexInlineTableDeep"}, nil)
 	checkVerified(t, grounded, map[string]report.Tri{
-		"allowPrivileged":    report.TriUnknown,
-		"readTimeout":        report.TriUnknown,
-		"innerHTML":          report.TriUnknown,
-		"redirectUrl":        report.TriUnknown,
-		"lexInlineTableDeep": report.TriNo, // genuinely absent from all tracked text
+		"web.allowPrivileged":    report.TriUnknown,
+		"web.readTimeout":        report.TriUnknown,
+		"web.innerHTML":          report.TriUnknown,
+		"web.redirectUrl":        report.TriUnknown,
+		"web.lexInlineTableDeep": report.TriNo, // genuinely absent from all tracked text
 	})
 }
 
@@ -360,7 +363,7 @@ func TestContainsWordErrorIsNotAbsence(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
+	if _, _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
 		t.Fatal(err)
 	}
 	if found, err := m.ContainsWord(ctx, commit, "ReadFrame"); err != nil || !found {
@@ -450,4 +453,70 @@ func TestGroundFileClaimExternalLookingPaths(t *testing.T) {
 		"http2/frame.go":        report.TriYes,
 		"frame.go":              report.TriUnknown,
 	})
+}
+
+// Final-review C2: reporters name functions along a call chain through
+// code they didn't write ("json.Unmarshal recurses into literalStore,
+// which panics"). literalStore is a real encoding/json function, absent
+// from this repository's text entirely, so a bare name must never be
+// disproved. The same invented name in a shape that binds it to this
+// repository is still disprovable.
+func TestGroundFunctionClaimBareDependencyNameStaysUnknown(t *testing.T) {
+	files := withFiles(map[string]string{
+		"config/load.go": "package config\n\nimport \"encoding/json\"\n\ntype Settings struct{ Name string }\n\nfunc Load(b []byte) (Settings, error) {\n\tvar s Settings\n\terr := json.Unmarshal(b, &s)\n\treturn s, err\n}\n",
+	})
+	grounded := groundValues(t, files, report.ClaimFunction, []string{
+		"literalStore",           // real encoding/json function, not in this repo
+		"json.Unmarshal",         // the stdlib call the repo makes
+		"(*Framer).literalStore", // invented method on a closed repo type
+		"http2.literalStore",     // invented unexported function in a repo package
+		"config.literalStore",    // same, in the package that imports encoding/json
+		"Load",                   // declared
+	}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"literalStore":           report.TriUnknown,
+		"json.Unmarshal":         report.TriUnknown,
+		"(*Framer).literalStore": report.TriNo,
+		"http2.literalStore":     report.TriNo,
+		"config.literalStore":    report.TriNo,
+		"Load":                   report.TriYes,
+	})
+	for _, c := range grounded {
+		if c.Value == "literalStore" && !strings.Contains(c.Evidence, "dependency") {
+			t.Errorf("literalStore evidence = %q, want it to say why a bare name isn't disproved", c.Evidence)
+		}
+	}
+}
+
+// Final-review I1: a git failure while checking a file that does
+// exist must leave the claim unknown, never "no".
+func TestGroundFileClaimGitErrorIsNotAbsence(t *testing.T) {
+	origin, commit := newOriginWithFiles(t, disproveFixture)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if found, err := m.FileExists(cancelled, commit, "http2/frame.go"); err == nil {
+		t.Errorf("FileExists with a cancelled context = %v, nil, want an error", found)
+	}
+	if found, err := m.FileExists(ctx, strings.Repeat("0", 40), "http2/frame.go"); err == nil {
+		t.Errorf("FileExists at a missing commit = %v, nil, want an error", found)
+	}
+	if found, err := m.FileExists(ctx, commit, "http2/missing.go"); err != nil || found {
+		t.Errorf("FileExists(http2/missing.go) = %v, %v, want false, nil", found, err)
+	}
+
+	for _, value := range []string{"http2/frame.go", "missing.go"} {
+		c := report.Claim{Kind: report.ClaimFile, Value: value, Verified: report.TriUnknown}
+		groundFileClaim(cancelled, m, commit, &c, newLazyIndex(ctx, m, commit))
+		if c.Verified != report.TriUnknown {
+			t.Errorf("%s with a failing git check: Verified = %s, want unknown; evidence: %s", value, c.Verified, c.Evidence)
+		}
+	}
 }
