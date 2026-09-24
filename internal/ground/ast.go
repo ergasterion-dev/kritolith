@@ -406,3 +406,11 @@ func levenshtein(a, b string) int {
 	}
 	return prev[len(rb)]
 }
+
+// SplitFunctionClaim exposes splitFunctionClaim to other packages
+// (dedupe's fingerprinting) that need the same (qualifier, name) parse
+// grounding already does for a function claim value, so there is one
+// source of truth for how "(*T).M" / "pkg.Func" / "Func" are split.
+func SplitFunctionClaim(value string) (qualifier, name string) {
+	return splitFunctionClaim(value)
+}
