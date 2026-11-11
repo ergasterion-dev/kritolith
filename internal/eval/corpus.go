@@ -147,3 +147,41 @@ func loadCase(dir string, kind Kind) (Case, error) {
 	}
 	return Case{ID: id, Kind: kind, Dir: dir, Meta: m}, nil
 }
+
+// Select returns the cases named by ids, in corpus order, each once.
+// No ids means every case. A case that is expected to be a duplicate
+// of another brings that case with it, and so on along the chain:
+// dedupe can only find the original if it went through the pipeline
+// first. An id that names no case is an error.
+func Select(cases []Case, ids []string) ([]Case, error) {
+	if len(ids) == 0 {
+		return cases, nil
+	}
+	byID := make(map[string]Case, len(cases))
+	for _, c := range cases {
+		byID[c.ID] = c
+	}
+	keep := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		// Follow the chain of originals. A case already kept has had
+		// its chain followed, which also ends a cycle.
+		for !keep[id] {
+			c, ok := byID[id]
+			if !ok {
+				return nil, fmt.Errorf("eval: no corpus case %q", id)
+			}
+			keep[id] = true
+			if c.Meta.ExpectedDuplicateOf == "" {
+				break
+			}
+			id = c.Meta.ExpectedDuplicateOf
+		}
+	}
+	out := make([]Case, 0, len(keep))
+	for _, c := range cases {
+		if keep[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}

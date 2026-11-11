@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/dedupe"
@@ -25,8 +26,9 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	corpus := fs.String("corpus", "testdata/corpus", "corpus directory")
 	dataDir := fs.String("data-dir", "", "keep results in this data dir (default: a temporary dir, removed afterwards)")
 	cfgPath := fs.String("config", "", "path to kritolith.json (runs extraction and LLM routing over the corpus)")
+	only := fs.String("case", "", "run only these corpus cases, by id, comma-separated (a near-duplicate case also runs the case it duplicates)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: kritolith eval [--corpus dir] [--data-dir dir] [--config file]")
+		fmt.Fprintln(stderr, "Usage: kritolith eval [--corpus dir] [--case id[,id]] [--data-dir dir] [--config file]")
 		fs.PrintDefaults()
 	}
 	pos, err := parseInterspersed(fs, args)
@@ -53,6 +55,11 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cases, err := eval.LoadCorpus(*corpus)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if *only != "" {
+		if cases, err = eval.Select(cases, strings.Split(*only, ",")); err != nil {
+			return fail(stderr, err)
+		}
 	}
 	dir := *dataDir
 	if dir != "" {

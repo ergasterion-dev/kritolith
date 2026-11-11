@@ -114,3 +114,59 @@ func TestRepoCorpusIsValid(t *testing.T) {
 		t.Fatalf("corpus has %d cases, want at least 40", len(cases))
 	}
 }
+
+func TestSelect(t *testing.T) {
+	cases := []Case{
+		{ID: "go-1", Kind: KindReal},
+		{ID: "go-2", Kind: KindReal},
+		{ID: "fab-1", Kind: KindFabricated},
+		{ID: "fab-dup", Kind: KindFabricated, Meta: Meta{ExpectedDuplicateOf: "go-2"}},
+		{ID: "fab-dup-of-dup", Kind: KindFabricated, Meta: Meta{ExpectedDuplicateOf: "fab-dup"}},
+	}
+	ids := func(cs []Case) string {
+		var out []string
+		for _, c := range cs {
+			out = append(out, c.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	tests := []struct {
+		name    string
+		want    []string
+		wantIDs string
+		wantErr string
+	}{
+		{name: "no filter keeps everything", want: nil, wantIDs: "go-1,go-2,fab-1,fab-dup,fab-dup-of-dup"},
+		{name: "one case", want: []string{"fab-1"}, wantIDs: "fab-1"},
+		{name: "corpus order, not request order", want: []string{"fab-1", "go-1"}, wantIDs: "go-1,fab-1"},
+		{name: "requested twice", want: []string{"go-1", "go-1"}, wantIDs: "go-1"},
+		{name: "duplicate case brings the case it duplicates", want: []string{"fab-dup"}, wantIDs: "go-2,fab-dup"},
+		{name: "chain of duplicates", want: []string{"fab-dup-of-dup"}, wantIDs: "go-2,fab-dup,fab-dup-of-dup"},
+		{name: "unknown case", want: []string{"fab-1", "nope"}, wantErr: `no corpus case "nope"`},
+		{name: "empty id", want: []string{""}, wantErr: `no corpus case ""`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Select(cases, tt.want)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Select error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Select: %v", err)
+			}
+			if ids(got) != tt.wantIDs {
+				t.Errorf("Select = %s, want %s", ids(got), tt.wantIDs)
+			}
+		})
+	}
+}
+
+func TestSelectDuplicateOfMissingCase(t *testing.T) {
+	cases := []Case{{ID: "fab-dup", Kind: KindFabricated, Meta: Meta{ExpectedDuplicateOf: "gone"}}}
+	if _, err := Select(cases, []string{"fab-dup"}); err == nil || !strings.Contains(err.Error(), `"gone"`) {
+		t.Fatalf("Select error = %v, want it to name the missing case", err)
+	}
+}

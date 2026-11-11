@@ -79,3 +79,25 @@ func TestEvalBadConfig(t *testing.T) {
 		t.Fatalf("code = %d, want 1", code)
 	}
 }
+
+// --case runs a chosen part of the corpus. fab-018 names a placeholder
+// repository, so nothing is cloned.
+func TestEvalCase(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run(context.Background(), []string{"eval", "--corpus", "../../testdata/corpus", "--case", "fab-018-needs-info"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code = %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "fab-018-needs-info") || strings.Contains(out.String(), "fab-019-needs-info") {
+		t.Errorf("want only the selected case:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "cases:") {
+		t.Errorf("want the summary for the selection:\n%s", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if code := run(context.Background(), []string{"eval", "--corpus", "../../testdata/corpus", "--case", "no-such-case"}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), `no corpus case "no-such-case"`) {
+		t.Fatalf("code = %d, stderr = %q", code, errOut.String())
+	}
+}

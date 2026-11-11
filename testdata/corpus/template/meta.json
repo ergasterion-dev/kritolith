@@ -1,0 +1,7 @@
+{
+  "repo": "owner/name",
+  "ref": "0000000000000000000000000000000000000000",
+  "expected_outcome": "GROUNDING_FAILED",
+  "source": "fabricated",
+  "notes": "Fabricated. Say what is invented and how you checked it is absent at the pinned ref, e.g.: invented method (*Parser).ReadUnsafe; parser.go is a real file at tag v1.2.3; grep -rn 'ReadUnsafe' at that tag returns no hits."
+}

@@ -115,7 +115,7 @@ Security reports describe unfixed vulnerabilities, so Kritolith is **local-first
 | `kritolith check --repo owner/name [--ref sha] [--poc dir] [--json] report.md` | works | Verify one report file. |
 | `kritolith check --repo owner/name [--ref sha] --ghsa GHSA-xxxx-xxxx-xxxx` | works | Verify a report filed through GitHub private vulnerability reporting, fetched with your own token. |
 | `kritolith osv sync` | works | Build or refresh the local mirror of the OSV Go advisories used for duplicate detection. |
-| `kritolith eval [--corpus dir]` | works | Run the eval corpus and print the scoreboard. |
+| `kritolith eval [--corpus dir] [--case id]` | works | Run the eval corpus, or chosen cases, and print the scoreboard. |
 | `kritolith version` | works | Print the version. |
 | `kritolith serve` | not built | Webhook server and workers for GitHub private vulnerability reports. |
 | `kritolith ingest --eml` | not built | Read a report from a raw email message. |
@@ -180,7 +180,7 @@ The corpus reports are written for the corpus, so the same build was also run ov
 
 ## Contributing
 
-Contributions are welcome, and fabricated test reports for the eval corpus are especially useful. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. All commits need a DCO sign-off (`git commit -s`).
+Contributions are welcome. The easiest useful one needs no knowledge of the code: [add a case to the eval corpus](CONTRIBUTING.md#add-a-corpus-case), a short report and the verdict it should get. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. All commits need a DCO sign-off (`git commit -s`).
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
 
