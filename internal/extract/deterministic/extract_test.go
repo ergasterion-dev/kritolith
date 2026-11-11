@@ -2,6 +2,7 @@ package deterministic
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -194,7 +195,10 @@ func TestExtractLargeInputCompletesQuickly(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	// The budget separates linear time from a blowup, which would take
+	// minutes. Under the race detector on a busy machine this input
+	// takes about five seconds, so a tighter budget fails at random.
+	case <-time.After(60 * time.Second):
 		t.Fatal("Extract took too long on large input")
 	}
 }
@@ -305,4 +309,49 @@ func FuzzExtract(f *testing.F) {
 		Extract(body)
 		PoCCandidates(body)
 	})
+}
+
+// Real advisories are full of links. A link is not a claim about the
+// repository's files: "pkg.go.dev" is a website, not a file called
+// pkg.go, and a path inside a URL is a location on some web server.
+// Reading either as a file claim once marked a genuine published
+// advisory GROUNDING_FAILED.
+func TestExtractIgnoresFilesAndFunctionsInsideLinks(t *testing.T) {
+	body := "### Summary\n\n" +
+		"Function [`parse.ParseUnverified`](https://github.com/golang-jwt/jwt/blob/c035977d9e11c351f4c05dfeae193923cbab49ee/parser.go#L138-L139) splits (via a call to [strings.Split](https://pkg.go.dev/strings#Split)) its argument.\n\n" +
+		"See also pkg.go.dev/github.com/golang-jwt/jwt/v5 and <https://cwe.mitre.org/data/definitions/405.html>, " +
+		"http://example.com/a/b/handler.go, www.example.go/x and docs.go.example.org.\n\n" +
+		"The bug itself is in parser.go and in internal/token/decode.go:42.\n"
+	var files, lines, funcs, versions []string
+	for _, c := range Extract(body) {
+		switch c.Kind {
+		case report.ClaimFile:
+			files = append(files, c.Value)
+		case report.ClaimLine:
+			lines = append(lines, c.Value)
+		case report.ClaimFunction:
+			funcs = append(funcs, c.Value)
+		case report.ClaimVersion:
+			versions = append(versions, c.Value)
+		}
+	}
+	if got, want := strings.Join(files, " "), "parser.go internal/token/decode.go"; got != want {
+		t.Errorf("file claims = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(lines, " "), "internal/token/decode.go:42"; got != want {
+		t.Errorf("line claims = %q, want %q", got, want)
+	}
+	for _, f := range funcs {
+		if strings.Contains(f, "mitre") || strings.Contains(f, "github") || strings.Contains(f, "handler") {
+			t.Errorf("function claim %q came from a link", f)
+		}
+	}
+	if !slices.Contains(funcs, "parse.ParseUnverified") || !slices.Contains(funcs, "strings.Split") {
+		t.Errorf("function claims = %v, missing the names in the link text", funcs)
+	}
+	// The commit in the blob link is still worth having as a
+	// candidate ref.
+	if !slices.Contains(versions, "c035977d9e11c351f4c05dfeae193923cbab49ee") {
+		t.Errorf("version claims = %v, missing the commit named in the link", versions)
+	}
 }

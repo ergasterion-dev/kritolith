@@ -14,6 +14,11 @@ import (
 // can produce, so pathological input can't create unbounded output.
 const maxPerKind = 50
 
+// maxExamined bounds how many candidate matches one extractor looks
+// at while filling its maxPerKind claims, when some candidates are
+// skipped rather than kept.
+const maxExamined = 20 * maxPerKind
+
 var (
 	fileRe          = regexp.MustCompile(`\b[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.go\b`)
 	lineRe          = regexp.MustCompile(`\b([A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.go):(\d{1,6})\b`)
@@ -65,10 +70,14 @@ var vulnKeywords = []struct{ phrase, class string }{
 // and never returns more than maxPerKind claims of any one kind.
 func Extract(body string) []report.Claim {
 	prose := stripFencedCodeBlocks(body)
+	// Files, lines and functions are read from the text with links
+	// removed; versions and commit SHAs are read with links in place,
+	// because a link to a commit or a blob is a fair way to name one.
+	plain := stripURLs(prose)
 	var claims []report.Claim
-	claims = append(claims, fileClaims(prose)...)
-	claims = append(claims, lineClaims(prose)...)
-	claims = append(claims, funcClaims(prose)...)
+	claims = append(claims, fileClaims(plain)...)
+	claims = append(claims, lineClaims(plain)...)
+	claims = append(claims, funcClaims(plain)...)
 	claims = append(claims, versionAndSHAClaims(prose)...)
 	claims = append(claims, vulnClassClaims(stripReproduceSection(prose))...)
 	return dedupe(claims)
@@ -82,6 +91,68 @@ func Extract(body string) []report.Claim {
 // like a "pkg.Func" claim to funcClaims, but isn't one.
 func stripFencedCodeBlocks(body string) string {
 	return fenceRe.ReplaceAllString(body, " ")
+}
+
+// stripURLs removes URLs from body, replacing each with a single
+// space. A URL is not a claim about the repository: its host can look
+// like a file ("pkg.go.dev" contains "pkg.go") or a qualified name
+// ("cwe.mitre.org"), and its path names a location on a web server.
+// Read as claims, these are files and functions that never exist in
+// the repository, which is exactly what marks a report as fabricated.
+// Real advisories link to documentation constantly, so this would
+// reject genuine reports. The visible text of a markdown link is kept.
+func stripURLs(body string) string {
+	if !strings.Contains(body, "://") {
+		return body
+	}
+	var b strings.Builder
+	b.Grow(len(body))
+	for {
+		i := strings.Index(body, "://")
+		if i < 0 {
+			b.WriteString(body)
+			return b.String()
+		}
+		end := i + len("://")
+		for end < len(body) && !endsURL(body[end]) {
+			end++
+		}
+		if start := urlSchemeStart(body, i); start >= 0 {
+			b.WriteString(body[:start])
+			b.WriteByte(' ')
+		} else {
+			b.WriteString(body[:end])
+		}
+		body = body[end:]
+	}
+}
+
+// urlSchemeStart returns where the http, https or ftp scheme that
+// ends at body[i] begins, or -1 if the text before "://" is not one of
+// those as a whole word.
+func urlSchemeStart(body string, i int) int {
+	for _, scheme := range []string{"https", "http", "ftp"} {
+		start := i - len(scheme)
+		if start < 0 || !strings.EqualFold(body[start:i], scheme) {
+			continue
+		}
+		if start > 0 && isWordByte(body[start-1]) {
+			continue
+		}
+		return start
+	}
+	return -1
+}
+
+// endsURL reports whether c cannot be part of a URL as people write
+// them in prose and markdown: whitespace, quotes, and the brackets
+// that close a markdown link or an autolink.
+func endsURL(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '<', '>', '"', '\'', '`', ')', ']':
+		return true
+	}
+	return false
 }
 
 // PoCCandidates returns the fenced code blocks in body, capped at
@@ -106,16 +177,34 @@ func newClaim(kind report.ClaimKind, value string) report.Claim {
 	}
 }
 
-func matchClaims(re *regexp.Regexp, body string, kind report.ClaimKind) []report.Claim {
-	matches := re.FindAllString(body, maxPerKind)
-	out := make([]report.Claim, 0, len(matches))
-	for _, m := range matches {
-		out = append(out, newClaim(kind, m))
+// fileClaims matches "path/to/file.go" shapes. A match that runs
+// straight on into ".word" or "/" is the start of a host name written
+// without a scheme ("pkg.go.dev/strings", "docs.go.example.org"), not
+// a file, and is skipped.
+func fileClaims(body string) []report.Claim {
+	var out []report.Claim
+	// Matches are taken one at a time so a huge input costs no more
+	// than the text up to the last claim kept. Skipped matches are
+	// bounded too, so input made only of host names can't turn this
+	// into a scan of everything.
+	for examined := 0; len(out) < maxPerKind && examined < maxExamined; examined++ {
+		loc := fileRe.FindStringIndex(body)
+		if loc == nil {
+			break
+		}
+		match, rest := body[loc[0]:loc[1]], body[loc[1]:]
+		body = rest
+		if strings.HasPrefix(rest, "/") || (len(rest) > 1 && rest[0] == '.' && isWordByte(rest[1])) {
+			continue
+		}
+		out = append(out, newClaim(report.ClaimFile, match))
 	}
 	return out
 }
 
-func fileClaims(body string) []report.Claim { return matchClaims(fileRe, body, report.ClaimFile) }
+func isWordByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
 
 // versionAndSHAClaims matches version tags and commit SHAs, both under the
 // shared ClaimVersion kind. Capped once per kind to enforce maxPerKind.
