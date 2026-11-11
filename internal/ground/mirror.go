@@ -197,7 +197,9 @@ func (m *Mirror) resolve(ctx context.Context, ref string) (string, bool) {
 // enough to reject a report on. resolved is false, with no error, if
 // nothing resolved at all. Every candidate (ref and each fallback) is
 // validated with report.ValidateRef before it reaches a git command
-// argument; an invalid candidate is skipped, not a hard error.
+// argument; an invalid candidate is skipped, not a hard error. A
+// candidate that names a commit on no branch and no tag (see
+// onBranchOrTag) is skipped the same way.
 func (m *Mirror) EnsureAndResolve(ctx context.Context, ref string, fallbackVersions []string) (commit string, resolved, viaFallback bool, err error) {
 	freshClone := false
 	if !m.exists() {
@@ -232,11 +234,27 @@ func (m *Mirror) tryResolve(ctx context.Context, candidates []string) (string, b
 		if err := report.ValidateRef(cand); err != nil {
 			continue
 		}
-		if sha, ok := m.resolve(ctx, cand); ok {
+		if sha, ok := m.resolve(ctx, cand); ok && m.onBranchOrTag(ctx, sha) {
 			return sha, true
 		}
 	}
 	return "", false
+}
+
+// onBranchOrTag reports whether commit is reachable from a branch or a
+// tag of the repository. A mirror holds more than that: GitHub
+// publishes every pull request's head as refs/pull/N/head, and anyone
+// can open a pull request, so a reporter can put an invented function
+// in one and cite that commit. A commit only a pull request (or no ref
+// at all) leads to is not the project's code, and a claim that checks
+// out against it proves nothing.
+//
+// A git failure reads as "not reachable": the ref then counts as
+// unresolved, which can only produce NEEDS_INFO, never a rejection.
+func (m *Mirror) onBranchOrTag(ctx context.Context, commit string) bool {
+	out, err := m.runGit(ctx, m.path, "for-each-ref", "--count=1", "--format=%(refname)",
+		"--contains", commit, "refs/heads", "refs/tags")
+	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // FileExists reports whether path exists in the tree at commit. found

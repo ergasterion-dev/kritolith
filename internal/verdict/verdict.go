@@ -81,7 +81,7 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 		v.Notes = append(v.Notes, "no commit or tag given; can't check claims against the code")
 	case res.GroundingRan && !res.RefResolved:
 		v.Outcome = report.OutcomeNeedsInfo
-		v.Notes = append(v.Notes, "claimed ref did not resolve to a commit in the repository")
+		v.Notes = append(v.Notes, "claimed ref did not resolve to a commit on a branch or tag of the repository")
 	case res.GroundingRan && hardClaimFailed(res.Claims) && res.ResolvedViaFallback:
 		v.Outcome = report.OutcomeInconclusive
 		v.Notes = append(v.Notes, "grounded via a fallback version, not the claimed commit — treating a hard-claim failure as inconclusive rather than a rejection")

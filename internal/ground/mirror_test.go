@@ -593,3 +593,66 @@ func TestReadFilesEmptyAndMissingCommit(t *testing.T) {
 		t.Errorf("ReadFiles(missing commit) = %v, want one not-ok callback", oks)
 	}
 }
+
+// A mirror clone copies every ref the origin has, and GitHub publishes
+// each pull request's head as refs/pull/N/head. Anyone can open a pull
+// request, so a reporter can put an invented function in one and cite
+// that commit. Such a commit is not the project's code: it must not
+// resolve, by SHA or by ref name, directly or as a fallback version.
+func TestEnsureAndResolveIgnoresCommitsOffEveryBranchAndTag(t *testing.T) {
+	origin, onMain := newTestOrigin(t)
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = origin
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("checkout", "-q", "-b", "attacker")
+	if err := os.WriteFile(filepath.Join(origin, "a.go"), []byte("package a\n\nfunc Foo() {}\n\nfunc InventedSink() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-q", "-am", "pull request")
+	prCommit := run("rev-parse", "HEAD")
+	run("update-ref", "refs/pull/1/head", prCommit)
+	run("checkout", "-q", "main")
+	run("branch", "-q", "-D", "attacker")
+
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if sha, resolved, _, err := m.EnsureAndResolve(ctx, onMain, nil); err != nil || !resolved || sha != onMain {
+		t.Fatalf("commit on main = %q, %v, %v, want %q, true, nil", sha, resolved, err, onMain)
+	}
+	if _, ok := m.resolve(ctx, prCommit); !ok {
+		t.Fatal("test setup: the pull request commit should be present in the mirror")
+	}
+	for _, ref := range []string{prCommit, prCommit[:12], "refs/pull/1/head", "pull/1/head"} {
+		if sha, resolved, _, err := m.EnsureAndResolve(ctx, ref, nil); err != nil || resolved {
+			t.Errorf("EnsureAndResolve(%q) = %q, resolved %v, err %v; want unresolved", ref, sha, resolved, err)
+		}
+		if sha, resolved, _, err := m.EnsureAndResolve(ctx, "no-such-ref", []string{ref}); err != nil || resolved {
+			t.Errorf("fallback %q = %q, resolved %v, err %v; want unresolved", ref, sha, resolved, err)
+		}
+	}
+
+	// End to end: the invented function must not come back verified.
+	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: prCommit}
+	claims := []report.Claim{{Kind: report.ClaimFunction, Value: "InventedSink", Verified: report.TriUnknown}}
+	grounded, resolved, _, _, _, err := groundClaims(ctx, m, r, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved || grounded[0].Verified != report.TriUnknown {
+		t.Fatalf("grounded against a pull request commit: resolved %v, claim %+v", resolved, grounded[0])
+	}
+	v := verdict.Compose(r, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved})
+	if v.Outcome != report.OutcomeNeedsInfo {
+		t.Fatalf("outcome = %s, want NEEDS_INFO", v.Outcome)
+	}
+}
