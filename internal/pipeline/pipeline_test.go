@@ -123,8 +123,8 @@ func TestRunExtractsDeterministicClaims(t *testing.T) {
 
 func TestRunMergesLLMClaimsWithoutOverridingDeterministic(t *testing.T) {
 	fs := &fakeStore{}
-	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go for the bug."}
-	stub := stubChain{[]llm.Provider{stubProvider{text: `{"claims": [{"kind": "file", "value": "a.go", "evidence": "llm evidence"}, {"kind": "version", "value": "v9.9.9", "evidence": "llm only"}]}`}}}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go for the bug in release 9.9.9."}
+	stub := stubChain{[]llm.Provider{stubProvider{text: `{"claims": [{"kind": "file", "value": "a.go", "evidence": "llm evidence"}, {"kind": "version", "value": "9.9.9", "evidence": "llm only"}]}`}}}
 	v, err := New(fs).WithLLM(stub).Run(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)

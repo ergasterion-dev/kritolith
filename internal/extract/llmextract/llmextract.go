@@ -62,7 +62,10 @@ type Chain interface {
 
 // Extract asks each provider in the router's "extract" chain, in
 // order, to find claims in r.Body, using the first provider whose
-// response is valid JSON matching the schema. A provider that errors,
+// response is valid JSON matching the schema. A file, function, line
+// or version claim is kept only if its value appears verbatim in
+// r.Body: the model may point at what the report says, never add to
+// it. A provider that errors,
 // times out, or returns invalid JSON is skipped, not fatal: if every
 // provider fails, Extract returns no claims and no error, since
 // deterministic extraction already ran and the caller must not treat
@@ -117,6 +120,15 @@ func extractFrom(ctx context.Context, p llm.Provider, body string) ([]report.Cla
 		}
 		value := strings.TrimSpace(rc.Value)
 		if value == "" || len(value) > 500 {
+			continue
+		}
+		if kind != report.ClaimVulnClass && !strings.Contains(body, value) {
+			// The model was asked what the report says, so a file,
+			// function, line or version it returns must be a quote
+			// from the report. One that isn't is the model's own
+			// invention, and checking an invented name against the
+			// code could reject a real report for something its
+			// author never wrote.
 			continue
 		}
 		claims = append(claims, report.Claim{
