@@ -75,7 +75,7 @@ flowchart LR
 | **Sandbox** | Builds and runs the PoC under [gVisor](https://gvisor.dev) with no network, hard CPU/memory/PID limits, and a control run at `HEAD`. |
 | **Verdict** | Writes a short, factual verdict plus an evidence bundle signed with ed25519, so anyone can check it wasn't altered. |
 
-**Built today:** intake from a local file, extract, ground, dedupe. **Not built yet:** intake from GitHub private reports and `.eml`, the sandbox, and signing. See [Roadmap](#roadmap).
+**Built today:** intake from a local file or one GitHub advisory at a time, extract, ground, dedupe. **Not built yet:** the webhook server that picks up GitHub private reports as they arrive, `.eml` intake, the sandbox, and signing. See [Roadmap](#roadmap).
 
 ## Verdicts
 
@@ -113,12 +113,27 @@ Security reports describe unfixed vulnerabilities, so Kritolith is **local-first
 | Command | Status | What it does |
 |---|---|---|
 | `kritolith check --repo owner/name [--ref sha] [--poc dir] [--json] report.md` | works | Verify one report file. |
+| `kritolith check --repo owner/name [--ref sha] --ghsa GHSA-xxxx-xxxx-xxxx` | works | Verify a report filed through GitHub private vulnerability reporting, fetched with your own token. |
 | `kritolith osv sync` | works | Build or refresh the local mirror of the OSV Go advisories used for duplicate detection. |
 | `kritolith eval [--corpus dir]` | works | Run the eval corpus and print the scoreboard. |
 | `kritolith version` | works | Print the version. |
 | `kritolith serve` | not built | Webhook server and workers for GitHub private vulnerability reports. |
 | `kritolith ingest --eml` | not built | Read a report from a raw email message. |
 | `kritolith keygen`, `kritolith verify-bundle` | not built | Create the ed25519 signing key; verify a signed evidence bundle. |
+
+### Reports from GitHub private vulnerability reporting
+
+A private report on GitHub is a repository security advisory in the `triage` state. Kritolith can read one directly:
+
+```sh
+export GITHUB_TOKEN=...   # or GH_TOKEN; never passed as a flag
+kritolith check --repo owner/name --ghsa GHSA-xxxx-xxxx-xxxx --ref v1.4.2
+```
+
+- The token must be able to read the repository's security advisories: a classic token with the `repo` or `repository_advisories` scope, or a fine-grained token with read access to "Repository security advisories". GitHub shows unpublished reports only to repository administrators, security managers and collaborators on the advisory.
+- Kritolith makes one `GET` to `api.github.com` (or `--github-api-url` for GitHub Enterprise Server), refuses redirects, and stores the report in the local data directory like any other. Nothing is written back to GitHub.
+- An advisory names versions, not a commit. Pass `--ref` if you know the affected tag or commit. Without it the verdict is `NEEDS_INFO`, with the claims still checked against any affected release named on the advisory.
+- This has been tested against published advisories. It has not yet been run against a report still in `triage`; GitHub documents the same endpoint for both.
 
 An LLM is optional and off by default. To use one for claim extraction and embeddings, copy [`kritolith.example.json`](kritolith.example.json) and pass it with `--config`.
 
@@ -149,17 +164,19 @@ Version 1 deliberately stays narrow.
 
 ## Where it stands
 
-Progress is measured on a public eval corpus in [`testdata/corpus`](testdata/corpus): 20 real Go advisories and 20 deliberately fabricated reports. `make eval` prints the scoreboard. Results at `caee2ce` (2026-11-11), with no LLM configured:
+Progress is measured on a public eval corpus in [`testdata/corpus`](testdata/corpus): 20 real Go advisories and 20 deliberately fabricated reports. `make eval` prints the scoreboard. Results on 2026-11-11, with no LLM configured:
 
 | Target | v1 goal | Now |
 |---|---|---|
 | Real reports wrongly marked `GROUNDING_FAILED` | **0** | **0 of 20** |
 | Real reports wrongly marked `LIKELY_DUPLICATE` | **0** | **0 of 20** |
-| Fabricated reports with fake code caught by grounding | ≥ 80% | 11 of 15 (73%) |
+| Fabricated reports with fake code caught by grounding | ≥ 80% | 7 of 15 (47%) |
 | Duplicate top-1 accuracy | ≥ 80% | 3 of 3 |
 | Real reports with runnable PoCs reproduced | ≥ 60% | 0 of 20: the sandbox is not built |
 
-The four fabricated reports that are not caught yet cite an invented package-level function or the wrong package. Kritolith answers `INCONCLUSIVE` for those instead of risking a wrong rejection. Overall, 16 of 40 cases get exactly the expected verdict; all 20 real advisories are `INCONCLUSIVE` today because their expected verdict needs the PoC to run.
+The eight fabricated reports that are not caught cite an invented package-level function, the wrong package, or an invented file by bare name (`remote_fetch.go` rather than `internal/remote_fetch.go`). Kritolith answers `INCONCLUSIVE` for those and shows "not found" in the evidence, instead of risking a wrong rejection: real reports name functions and files from the standard library, a dependency or an upstream project all the time. Overall, 12 of 40 cases get exactly the expected verdict; all 20 real advisories are `INCONCLUSIVE` today because their expected verdict needs the PoC to run.
+
+The corpus reports are written for the corpus, so the same build was also run over the text of 46 published security advisories from those projects, fetched with `kritolith check --ghsa`. That found two ways a genuine advisory could be rejected, both fixed: a link such as `pkg.go.dev/...` was read as a file named `pkg.go`, and a file in an upstream project cited by bare name was treated as missing from this one. After the fixes, none of the 46 has a file or function wrongly marked as absent. The catch rate above was 11 of 15 before the second fix; the lower number is the price of not rejecting those reports.
 
 ## Contributing
 

@@ -35,6 +35,15 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - **PoC files are stored and never executed.** Nothing in the current code builds or runs reporter-supplied code.
 - `--repo` must match `owner/name` with a restricted character set. The ref must pass `report.ValidateRef`, which is stricter than git: no leading `-`, no `..`, `@`, `~`, `^`, `:` or whitespace, no path component starting with `.` or ending in `.lock`.
 
+### Intake from GitHub (`kritolith check --ghsa`)
+
+- One `GET` to the repository security advisories API, authenticated with the operator's token. The advisory ID must match GitHub's `GHSA-xxxx-xxxx-xxxx` format before it is placed in the URL, and the answer must be for the ID that was asked for.
+- The token is read from `GITHUB_TOKEN` or `GH_TOKEN`, never from a flag, and is never printed or logged. The API URL must be `https` (plain `http` only to loopback).
+- Redirects are refused: a redirect would send the token to whatever host the answer names. The request has a 30 second timeout and the answer is capped at 4 MiB.
+- Error messages never include the response body. For a private advisory even an error page is not something to print.
+- The advisory's summary, description and "affected" fields are all written by the reporter. They are laid out as report text and go through the same extraction as a file. Each structured field is collapsed to one line, so a package name cannot start a new heading or list item.
+- Nothing is written back to GitHub.
+
 ### Extract
 
 - The deterministic extractor is regular expressions over the report text (Go's `regexp`, which runs in linear time). Fenced code blocks are removed first, so code in a PoC is not read as a claim. Links are removed before files and functions are read, so `pkg.go.dev` is not a file called `pkg.go`. Output is capped at 50 claims per kind.

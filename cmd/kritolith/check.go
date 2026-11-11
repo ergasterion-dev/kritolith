@@ -7,13 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/dedupe"
 	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
+	"github.com/ergasterion-dev/kritolith/internal/intake/github"
 	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/pipeline"
+	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/store"
 	"github.com/ergasterion-dev/kritolith/internal/verdict"
 )
@@ -27,8 +30,11 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	cfgPath := fs.String("config", "", "path to kritolith.json")
 	dataDir := fs.String("data-dir", "", "data directory (overrides config)")
 	asJSON := fs.Bool("json", false, "print the verdict as JSON")
+	ghsa := fs.String("ghsa", "", "read the report from this GitHub security advisory (GHSA-xxxx-xxxx-xxxx) instead of a file; needs a token in GITHUB_TOKEN or GH_TOKEN")
+	apiURL := fs.String("github-api-url", github.DefaultAPIURL, "GitHub REST API base URL (GitHub Enterprise Server: https://host/api/v3)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: kritolith check --repo owner/name [--ref sha] [--poc dir] report.md")
+		fmt.Fprintln(stderr, "       kritolith check --repo owner/name [--ref sha] --ghsa GHSA-xxxx-xxxx-xxxx")
 		fs.PrintDefaults()
 	}
 
@@ -39,8 +45,12 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return 2
 	}
-	if len(pos) != 1 || *repo == "" {
+	if *repo == "" || (*ghsa == "" && len(pos) != 1) || (*ghsa != "" && len(pos) != 0) {
 		fs.Usage()
+		return 2
+	}
+	if *ghsa != "" && *poc != "" {
+		fmt.Fprintln(stderr, "kritolith: --poc cannot be combined with --ghsa: an advisory carries no PoC files")
 		return 2
 	}
 
@@ -63,9 +73,21 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(stderr, err)
 	}
-	r, err := file.Load(file.Options{Repo: *repo, Ref: *ref, ReportPath: pos[0], PoCDir: *poc})
-	if err != nil {
-		return fail(stderr, err)
+	var r report.Report
+	if *ghsa != "" {
+		token, err := githubToken(os.Getenv)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		r, err = github.Load(ctx, github.Options{Repo: *repo, GHSAID: *ghsa, Ref: *ref, Token: token, APIURL: *apiURL})
+		if err != nil {
+			return fail(stderr, err)
+		}
+	} else {
+		r, err = file.Load(file.Options{Repo: *repo, Ref: *ref, ReportPath: pos[0], PoCDir: *poc})
+		if err != nil {
+			return fail(stderr, err)
+		}
 	}
 	st, err := store.Open(ctx, dir)
 	if err != nil {
@@ -99,4 +121,17 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	fmt.Fprint(stdout, verdict.Render(r, v))
 	return 0
+}
+
+// githubToken reads the token for --ghsa from the environment:
+// GITHUB_TOKEN, then GH_TOKEN (the names the GitHub CLI uses). There
+// is deliberately no flag for it: a command line is visible to every
+// user on the machine and is saved in shell history.
+func githubToken(getenv func(string) string) (string, error) {
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if v := getenv(name); v != "" {
+			return v, nil
+		}
+	}
+	return "", errors.New("--ghsa needs a GitHub token in GITHUB_TOKEN or GH_TOKEN; it must be able to read the repository's security advisories")
 }

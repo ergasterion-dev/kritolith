@@ -18,7 +18,7 @@ var version = "dev"
 const usage = `Usage: kritolith <command> [flags]
 
 Commands:
-  check     verify a single report file
+  check     verify a single report: a file, or a GitHub advisory with --ghsa
   eval      run the eval corpus and print the scoreboard
   osv       manage the local OSV mirror (run "kritolith osv sync -h")
   version   print the version
