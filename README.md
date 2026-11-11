@@ -19,7 +19,7 @@ Reproducing the PoC in a locked-down sandbox and signing the verdict are next on
 </div>
 
 > [!WARNING]
-> **Kritolith is pre-alpha.** `kritolith check` works today for Go projects: it extracts the claims in a report, checks them against the repository at the claimed commit, and looks for duplicates. It does **not** run PoC code yet, so it cannot say whether a report reproduces. Keep it away from real embargoed reports until the [threat model](#roadmap) and sandbox hardening land.
+> **Kritolith is pre-alpha.** `kritolith check` works today for Go projects: it extracts the claims in a report, checks them against the repository at the claimed commit, and looks for duplicates. It does **not** run PoC code yet, so it cannot say whether a report reproduces. Read the [threat model](docs/threat-model.md), including its list of known gaps, before pointing it at a real embargoed report.
 
 ## Try it
 
@@ -95,7 +95,7 @@ flowchart LR
 ## Design principles
 
 - **Deterministic checks decide.** The LLM only extracts claims and drafts replies. Everything it produces is re-verified against git or the sandbox.
-- **Every report is hostile input.** Report text, PoC code and attachments are assumed to contain prompt injection or sandbox escape attempts.
+- **Every report is hostile input.** Report text, PoC code and attachments are assumed to contain prompt injection or sandbox escape attempts. The [threat model](docs/threat-model.md) says what is done about it at each stage.
 - **Evidence, not opinions.** Each claim records what was found, where, and at which commit.
 - **One static binary.** Standard library first. The only third-party Go module is a pure-Go SQLite driver. No vendor SDKs.
 
@@ -144,7 +144,8 @@ Version 1 deliberately stays narrow.
 - [x] Deduplication with embeddings and a local OSV mirror
 - [ ] gVisor sandbox with hostile-PoC hardening
 - [ ] Signed verdicts, email delivery, `.eml` intake
-- [ ] Public threat model, install docs, first release
+- [x] Public threat model ([docs/threat-model.md](docs/threat-model.md)) and fuzz tests for every parser of hostile input
+- [ ] Install docs, first release
 
 ## Where it stands
 
