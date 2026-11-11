@@ -9,9 +9,17 @@ import (
 	"testing"
 )
 
+// TestEvalOnRepoCorpus runs the whole corpus, which clones about
+// twenty real repositories from GitHub and takes several minutes. It
+// runs only when KRITOLITH_CORPUS_TEST=1, which `make test` and
+// `make ci` set, so a plain `go test ./...` stays quick for someone
+// who has just cloned the repository.
 func TestEvalOnRepoCorpus(t *testing.T) {
+	if os.Getenv("KRITOLITH_CORPUS_TEST") != "1" {
+		t.Skip("set KRITOLITH_CORPUS_TEST=1 (or use `make test`) to run the full corpus; it clones about twenty repositories")
+	}
 	var out, errOut bytes.Buffer
-	code := run(context.Background(), []string{"eval", "--corpus", "../../testdata/corpus"}, &out, &errOut)
+	code := run(context.Background(), []string{"eval", "--corpus", "../../testdata/corpus", "--data-dir", filepath.Join(t.TempDir(), "data")}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code = %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
 	}

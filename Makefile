@@ -2,13 +2,19 @@ GO ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test vet fmt fmt-check eval ci clean
+.PHONY: build test test-quick vet fmt fmt-check eval ci clean
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/kritolith ./cmd/kritolith
 
+# The full test run, including the corpus test that clones about twenty
+# repositories. A plain `go test ./...` skips that one test.
 test:
-	$(GO) test -race -timeout 20m ./...
+	KRITOLITH_CORPUS_TEST=1 $(GO) test -race -timeout 20m ./...
+
+# Everything except the corpus test: about a minute.
+test-quick:
+	$(GO) test -race ./...
 
 vet:
 	$(GO) vet ./...

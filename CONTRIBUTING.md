@@ -18,10 +18,14 @@ Standard library first. The only third-party Go module in v1 is `modernc.org/sql
 Requirements: Go (see `go.mod`), `git`. Sandbox work also needs Linux with [gVisor](https://gvisor.dev) (`runsc`) installed.
 
 ```sh
-make test     # unit tests with -race
-make vet      # go vet
-make eval     # run the eval corpus and print the scoreboard
+go test ./...     # every test except the full corpus run; about a minute
+make test         # the same with -race, plus the corpus test (clones about twenty repositories; several minutes)
+make vet          # go vet
+make eval         # run the eval corpus and print the scoreboard
+make ci           # what CI runs: format check, vet, test, build, eval
 ```
+
+Fuzz targets live next to the code they test; [docs/threat-model.md](docs/threat-model.md) lists them and how to run one.
 
 Sandbox tests need `runsc` and sit behind a build tag:
 
