@@ -5,8 +5,8 @@
 **Verify, dedupe, reproduce.**
 
 Kritolith checks incoming security reports before a maintainer reads them.<br>
-It tests every claim against the real code, reproduces the PoC in a locked-down sandbox,<br>
-flags duplicates, and hands you a signed evidence verdict.
+Today it tests every claim against the real code and flags duplicates, with the evidence for each.<br>
+Reproducing the PoC in a locked-down sandbox and signing the verdict are next on the roadmap.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#roadmap)
@@ -14,12 +14,38 @@ flags duplicates, and hands you a signed evidence verdict.
 [![Self-hosted](https://img.shields.io/badge/self--hosted-local--LLM%20first-6f42c1.svg)](#privacy-and-llms)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[How it works](#how-it-works) · [Verdicts](#verdicts) · [Scope](#scope) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Try it](#try-it) · [How it works](#how-it-works) · [Verdicts](#verdicts) · [Where it stands](#where-it-stands) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 </div>
 
 > [!WARNING]
-> **Kritolith is pre-alpha and under active development.** The commands below show the planned interface and don't work yet. Don't run it on real embargoed reports until sandbox hardening lands.
+> **Kritolith is pre-alpha.** `kritolith check` works today for Go projects: it extracts the claims in a report, checks them against the repository at the claimed commit, and looks for duplicates. It does **not** run PoC code yet, so it cannot say whether a report reproduces. Keep it away from real embargoed reports until the [threat model](#roadmap) and sandbox hardening land.
+
+## Try it
+
+You need Go 1.26 or later and `git`. No LLM, no container runtime, no configuration file.
+
+```sh
+go install github.com/ergasterion-dev/kritolith/cmd/kritolith@latest
+
+git clone https://github.com/ergasterion-dev/kritolith && cd kritolith
+kritolith check --repo golang/net --ref e1fcd82abba34df74614020343be8eb1fe85f0d9 \
+  testdata/corpus/fabricated/fab-001-invented-method/report.md
+```
+
+That report describes an out-of-bounds read in a method called `(*Framer).ReadContinuationUnsafe`. The method was invented for the test corpus. Kritolith fetches `golang/net`, looks at the claimed commit, and answers:
+
+```text
+Kritolith: GROUNDING_FAILED at e1fcd82abba3
+• file http2/frame.go — file exists at e1fcd82abba3
+• function (*Framer).ReadContinuationUnsafe — not declared in the repository; closest match: parseContinuationFrame (http2/frame.go:1257)
+• version v0.38.0 — found in report text; not yet checked against code
+• a claimed file or function does not exist at the resolved commit
+```
+
+The first run clones the repository into a local mirror; later runs on the same repository take about half a second. Add `--json` for machine-readable output.
+
+A real advisory gets a different answer. Run it on `testdata/corpus/real/go-2024-3250/report.md` (`--repo golang-jwt/jwt --ref 9358574a7a1a2c8d644f22b6e8de627ba85c58d0`) and the claimed function is found at `parser.go:52`; the verdict is `INCONCLUSIVE` because reproducing the PoC is the part that is not built yet.
 
 ---
 
@@ -49,15 +75,7 @@ flowchart LR
 | **Sandbox** | Builds and runs the PoC under [gVisor](https://gvisor.dev) with no network, hard CPU/memory/PID limits, and a control run at `HEAD`. |
 | **Verdict** | Writes a short, factual verdict plus an evidence bundle signed with ed25519, so anyone can check it wasn't altered. |
 
-### Example verdict
-
-```text
-Kritolith: GROUNDING_FAILED at a3f9c1
-• function http2.parseHeader — not found (closest: parseHeaders, frame.go:412)
-• file internal/hpack/decode.go — found
-PoC not run: grounding failed on a hard claim.
-Evidence bundle: sha256:… (signed)
-```
+**Built today:** intake from a local file, extract, ground, dedupe. **Not built yet:** intake from GitHub private reports and `.eml`, the sandbox, and signing. See [Roadmap](#roadmap).
 
 ## Verdicts
 
@@ -90,47 +108,21 @@ Security reports describe unfixed vulnerabilities, so Kritolith is **local-first
 - Cloud providers (OpenAI, Anthropic, Gemini) are an **explicit per-project opt-in**, and every cloud call is logged with the report ID.
 - No telemetry. Report content never appears in logs above debug level.
 
-## Planned usage
+## Commands
 
-<details open>
-<summary><b>Check a report from the command line</b></summary>
+| Command | Status | What it does |
+|---|---|---|
+| `kritolith check --repo owner/name [--ref sha] [--poc dir] [--json] report.md` | works | Verify one report file. |
+| `kritolith osv sync` | works | Build or refresh the local mirror of the OSV Go advisories used for duplicate detection. |
+| `kritolith eval [--corpus dir]` | works | Run the eval corpus and print the scoreboard. |
+| `kritolith version` | works | Print the version. |
+| `kritolith serve` | not built | Webhook server and workers for GitHub private vulnerability reports. |
+| `kritolith ingest --eml` | not built | Read a report from a raw email message. |
+| `kritolith keygen`, `kritolith verify-bundle` | not built | Create the ed25519 signing key; verify a signed evidence bundle. |
 
-```sh
-kritolith check --repo owner/name --ref a3f9c1 report.md --poc ./poc/
-```
-</details>
+An LLM is optional and off by default. To use one for claim extraction and embeddings, copy [`kritolith.example.json`](kritolith.example.json) and pass it with `--config`.
 
-<details>
-<summary><b>Run as a service for GitHub private vulnerability reports</b></summary>
-
-```sh
-kritolith keygen        # create the ed25519 signing key
-kritolith osv sync      # build the local OSV mirror
-kritolith serve         # webhook server + workers
-```
-
-Verdicts are emailed to the project's configured maintainers and stored locally. GitHub has no API for commenting on advisories.
-</details>
-
-<details>
-<summary><b>Pipe in reports from email</b></summary>
-
-```sh
-kritolith ingest --eml < message.eml
-```
-
-Works with fetchmail, procmail, a Postfix pipe, or anything else that can hand over a raw message.
-</details>
-
-<details>
-<summary><b>Verify a signed evidence bundle</b></summary>
-
-```sh
-kritolith verify-bundle verdict-01J9Z….tar
-```
-</details>
-
-**Requirements:** Linux with [gVisor](https://gvisor.dev) (`runsc`), `git`, and the Go toolchain. An LLM is optional.
+**Requirements today:** `git` and the Go toolchain. The sandbox, when it lands, will need Linux with [gVisor](https://gvisor.dev) (`runsc`).
 
 ## Scope
 
@@ -146,22 +138,27 @@ Version 1 deliberately stays narrow.
 
 ## Roadmap
 
-- [ ] Skeleton: core types, SQLite store, `kritolith check` end to end
-- [ ] Claim extraction + pluggable local-first LLM layer
-- [ ] Grounding against git and the Go AST
-- [ ] Deduplication with embeddings and a local OSV mirror
+- [x] Skeleton: core types, SQLite store, `kritolith check` end to end
+- [x] Claim extraction + pluggable local-first LLM layer
+- [x] Grounding against git and the Go AST
+- [x] Deduplication with embeddings and a local OSV mirror
 - [ ] gVisor sandbox with hostile-PoC hardening
 - [ ] Signed verdicts, email delivery, `.eml` intake
 - [ ] Public threat model, install docs, first release
 
-Progress is measured on a public eval corpus of real Go advisories and deliberately fabricated reports. The v1 bar:
+## Where it stands
 
-| Target | Goal |
-|---|---|
-| Real reports wrongly marked `GROUNDING_FAILED` | **0** |
-| Fabricated reports with fake code caught by grounding | ≥ 80% |
-| Real reports with runnable PoCs reproduced | ≥ 60% |
-| Duplicate top-1 accuracy | ≥ 80% |
+Progress is measured on a public eval corpus in [`testdata/corpus`](testdata/corpus): 20 real Go advisories and 20 deliberately fabricated reports. `make eval` prints the scoreboard. Results at `caee2ce` (2026-11-11), with no LLM configured:
+
+| Target | v1 goal | Now |
+|---|---|---|
+| Real reports wrongly marked `GROUNDING_FAILED` | **0** | **0 of 20** |
+| Real reports wrongly marked `LIKELY_DUPLICATE` | **0** | **0 of 20** |
+| Fabricated reports with fake code caught by grounding | ≥ 80% | 11 of 15 (73%) |
+| Duplicate top-1 accuracy | ≥ 80% | 3 of 3 |
+| Real reports with runnable PoCs reproduced | ≥ 60% | 0 of 20: the sandbox is not built |
+
+The four fabricated reports that are not caught yet cite an invented package-level function or the wrong package. Kritolith answers `INCONCLUSIVE` for those instead of risking a wrong rejection. Overall, 16 of 40 cases get exactly the expected verdict; all 20 real advisories are `INCONCLUSIVE` today because their expected verdict needs the PoC to run.
 
 ## Contributing
 
