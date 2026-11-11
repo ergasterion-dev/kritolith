@@ -16,5 +16,7 @@
       "draft":   ["local-small", "claude"]
     }
   },
+  "github": { "webhook_secret_env": "KRITOLITH_WEBHOOK_SECRET", "token_env": "GITHUB_TOKEN" },
+  "smtp": { "addr": "smtp.example.org:587", "from": "kritolith@example.org", "username": "kritolith", "password_env": "KRITOLITH_SMTP_PASSWORD" },
   "sandbox": { "runtime": "runsc", "run_timeout_seconds": 120, "memory_mb": 2048, "cpus": 2 }
 }

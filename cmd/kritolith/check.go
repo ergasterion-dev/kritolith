@@ -11,14 +11,9 @@ import (
 	"os"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
-	"github.com/ergasterion-dev/kritolith/internal/dedupe"
-	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
 	"github.com/ergasterion-dev/kritolith/internal/intake/github"
-	"github.com/ergasterion-dev/kritolith/internal/llm"
-	"github.com/ergasterion-dev/kritolith/internal/pipeline"
 	"github.com/ergasterion-dev/kritolith/internal/report"
-	"github.com/ergasterion-dev/kritolith/internal/store"
 	"github.com/ergasterion-dev/kritolith/internal/verdict"
 )
 
@@ -32,6 +27,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	dataDir := fs.String("data-dir", "", "data directory (overrides config)")
 	asJSON := fs.Bool("json", false, "print the verdict as JSON")
 	bundle := fs.String("bundle", "", "also write the signed evidence bundle to this file (needs a key from `kritolith keygen`)")
+	doNotify := fs.Bool("notify", false, "email the verdict to the project's notify addresses (needs smtp in --config)")
 	ghsa := fs.String("ghsa", "", "read the report from this GitHub security advisory (GHSA-xxxx-xxxx-xxxx) instead of a file; needs a token in GITHUB_TOKEN or GH_TOKEN")
 	apiURL := fs.String("github-api-url", github.DefaultAPIURL, "GitHub REST API base URL (GitHub Enterprise Server: https://host/api/v3)")
 	fs.Usage = func() {
@@ -91,62 +87,44 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(stderr, err)
 		}
 	}
-	return runReport(ctx, r, cfg, dir, output{json: *asJSON, bundle: *bundle}, stdout, stderr)
+	return runReport(ctx, r, cfg, dir, output{json: *asJSON, bundle: *bundle, notify: *doNotify}, stdout, stderr)
 }
 
 // output says how a verdict should leave the process.
 type output struct {
 	json   bool   // print JSON instead of the text summary
 	bundle string // also write the signed evidence bundle here
+	notify bool   // also email the verdict to the project's maintainers
 }
 
 // runReport sends one report through the pipeline and prints its
-// verdict. Every intake command ends here, so a report is handled the
-// same way however it arrived.
+// verdict. Every one-shot intake command ends here, so a report is
+// handled the same way however it arrived.
 func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir string, out output, stdout, stderr io.Writer) int {
-	st, err := store.Open(ctx, dir)
+	pr, err := newProcessor(ctx, cfg, dir)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	defer st.Close()
+	defer pr.close()
 
-	// Signing is on once a key exists. A key that exists but can't be
-	// used is an error, never a reason to carry on unsigned.
-	var signer *verdict.Signer
-	key, haveKey, err := verdict.LoadKey(dir)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	if haveKey {
-		if signer, err = verdict.NewSigner(key, nil); err != nil {
-			return fail(stderr, err)
+	// Everything --notify and --bundle need is checked before any work
+	// is done, so a run that can't deliver says so at once instead of
+	// after the report has been processed.
+	if out.notify {
+		if err := pr.canNotify(r.Repo); err != nil {
+			return fail(stderr, fmt.Errorf("--notify: %w", err))
 		}
 	}
-	if out.bundle != "" && signer == nil {
+	if out.bundle != "" && pr.signer == nil {
 		return fail(stderr, errors.New("--bundle needs a signing key: run `kritolith keygen` first"))
 	}
 
-	var router *llm.Router
-	if cfg != nil {
-		router, err = buildRouter(*cfg, nil)
-		if err != nil {
-			return fail(stderr, err)
-		}
-	}
-	p := pipeline.New(st).WithGround(ground.NewService(dir)).WithDedupe(dedupe.NewService(st, router))
-	if router != nil {
-		p = p.WithLLM(router)
-	}
-	if signer != nil {
-		p = p.WithSigner(signer)
-	}
-
-	v, err := p.Run(ctx, r)
+	v, err := pr.run(ctx, r)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	if out.bundle != "" {
-		if err := writeBundleFile(out.bundle, r, v, signer.PublicKey()); err != nil {
+		if err := writeBundleFile(out.bundle, r, v, pr.signer.PublicKey()); err != nil {
 			return fail(stderr, err)
 		}
 	}
@@ -156,23 +134,18 @@ func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir str
 		if err := enc.Encode(v); err != nil {
 			return fail(stderr, err)
 		}
-		return 0
+	} else {
+		fmt.Fprint(stdout, verdict.Render(r, v))
 	}
-	fmt.Fprint(stdout, verdict.Render(r, v))
-	return 0
-}
-
-// githubToken reads the token for --ghsa from the environment:
-// GITHUB_TOKEN, then GH_TOKEN (the names the GitHub CLI uses). There
-// is deliberately no flag for it: a command line is visible to every
-// user on the machine and is saved in shell history.
-func githubToken(getenv func(string) string) (string, error) {
-	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
-		if v := getenv(name); v != "" {
-			return v, nil
+	if out.notify {
+		// The verdict is already stored and printed. A delivery failure
+		// is reported and makes the command exit non-zero so a cron job
+		// or mail pipe notices.
+		if err := pr.notify(ctx, r, v); err != nil {
+			return fail(stderr, fmt.Errorf("the verdict is stored, but emailing it failed: %w", err))
 		}
 	}
-	return "", errors.New("--ghsa needs a GitHub token in GITHUB_TOKEN or GH_TOKEN; it must be able to read the repository's security advisories")
+	return 0
 }
 
 // writeBundleFile writes the evidence bundle to path. It never
@@ -192,4 +165,17 @@ func writeBundleFile(path string, r report.Report, v report.Verdict, pub ed25519
 		return fmt.Errorf("write bundle: %w", err)
 	}
 	return nil
+}
+
+// githubToken reads the token for --ghsa from the environment:
+// GITHUB_TOKEN, then GH_TOKEN (the names the GitHub CLI uses). There
+// is deliberately no flag for it: a command line is visible to every
+// user on the machine and is saved in shell history.
+func githubToken(getenv func(string) string) (string, error) {
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if v := getenv(name); v != "" {
+			return v, nil
+		}
+	}
+	return "", errors.New("--ghsa needs a GitHub token in GITHUB_TOKEN or GH_TOKEN; it must be able to read the repository's security advisories")
 }

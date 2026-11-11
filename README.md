@@ -40,7 +40,7 @@ Kritolith: GROUNDING_FAILED at e1fcd82abba3
 • file http2/frame.go — file exists at e1fcd82abba3
 • function (*Framer).ReadContinuationUnsafe — not declared in the repository; closest match: parseContinuationFrame (http2/frame.go:1257)
 • version v0.38.0 — found in report text; not yet checked against code
-• a claimed file or function does not exist at the resolved commit
+• a claimed file, function or package does not exist at the resolved commit
 ```
 
 The first run clones the repository into a local mirror; later runs on the same repository take about half a second. Add `--json` for machine-readable output.
@@ -75,7 +75,7 @@ flowchart LR
 | **Sandbox** | Builds and runs the PoC under [gVisor](https://gvisor.dev) with no network, hard CPU/memory/PID limits, and a control run at `HEAD`. |
 | **Verdict** | Writes a short, factual verdict plus an evidence bundle signed with ed25519, so anyone can check it wasn't altered. |
 
-**Built today:** intake from a local file, a raw email message, or one GitHub advisory at a time; extract, ground, dedupe, and signed verdicts. **Not built yet:** the webhook server that picks up GitHub private reports as they arrive, the sandbox, and email delivery. See [Roadmap](#roadmap).
+**Built today:** intake from a local file, a raw email message, or one GitHub advisory at a time; extract, ground, dedupe, and signed verdicts. **Not built yet:** the sandbox, which is what will reproduce a PoC. See [Roadmap](#roadmap).
 
 ## Verdicts
 
@@ -117,11 +117,12 @@ Security reports describe unfixed vulnerabilities, so Kritolith is **local-first
 | `kritolith ingest --eml --repo owner/name [--ref sha] < message.eml` | works | Verify a report from a raw email message. Attachments are kept as PoC files. |
 | `kritolith keygen` | works | Create the ed25519 key that signs verdicts. Once it exists, every verdict is signed. |
 | `kritolith check ... --bundle file.tar` (also `ingest`) | works | Also write the signed evidence bundle: the verdict and a detached signature. |
+| `kritolith check ... --notify` (also `ingest`) | works | Also email the verdict, with its bundle if signed, to the project's `notify` addresses. |
 | `kritolith verify-bundle [--pubkey ed25519:...] bundle.tar` | works | Check a bundle's signature and print the verdict it carries. |
+| `kritolith serve --config kritolith.json [--notify]` | works | Receive GitHub webhooks and verify each new private report as it is filed. |
 | `kritolith osv sync` | works | Build or refresh the local mirror of the OSV Go advisories used for duplicate detection. |
 | `kritolith eval [--corpus dir] [--case id]` | works | Run the eval corpus, or chosen cases, and print the scoreboard. |
 | `kritolith version` | works | Print the version. |
-| `kritolith serve` | not built | Webhook server and workers for GitHub private vulnerability reports. |
 
 ### Reports from GitHub private vulnerability reporting
 
@@ -145,6 +146,32 @@ kritolith ingest --eml --repo owner/name < message.eml
 
 Works with anything that can hand over a raw message: fetchmail, procmail, a Postfix pipe, or "Show original" saved from a mail client. The report text is the plain-text body (or the HTML body with its markup removed), the subject becomes the title, and attachments are stored as PoC files without being run. The sender's address is not stored. With `--config` naming exactly one project, `--repo` can be left out.
 
+### Run as a service
+
+`kritolith serve` listens for GitHub's `repository_advisory` webhook, and when someone files a private report on one of your projects it fetches the report, checks it and (with `--notify`) emails you the verdict.
+
+```json
+{
+  "projects": [{ "repo": "owner/name", "notify": ["security@example.org"] }],
+  "github": { "webhook_secret_env": "KRITOLITH_WEBHOOK_SECRET", "token_env": "GITHUB_TOKEN" },
+  "smtp": { "addr": "smtp.example.org:587", "from": "kritolith@example.org" }
+}
+```
+
+```sh
+export KRITOLITH_WEBHOOK_SECRET=...   # the secret you set on the webhook, 16+ characters
+export GITHUB_TOKEN=...               # can read the projects' security advisories
+kritolith serve --config kritolith.json --notify
+```
+
+On GitHub, add a webhook to the repository (or organization) with the payload URL `https://your-host/webhook/github`, content type `application/json`, your secret, and the "Repository advisories" event.
+
+- It listens on `127.0.0.1:8787` by default and speaks plain HTTP. Put a reverse proxy that terminates TLS in front of it.
+- Every delivery must carry a valid `X-Hub-Signature-256`. Unsigned or wrongly signed requests get a 401 and nothing else happens.
+- A webhook only says which report to look at. The report is fetched from GitHub's API with your token, so nothing in a webhook body is acted on.
+- Reports are queued in the database and processed one at a time. GitHub's redeliveries are ignored, failures are retried with a growing delay (one minute up to two hours), and a job interrupted by a restart is picked up again.
+- A GitHub App is not required: a webhook and a token are enough. This has been tested end to end against a local stand-in for GitHub, not yet against github.com.
+
 ### Signed verdicts
 
 ```sh
@@ -156,6 +183,24 @@ kritolith verify-bundle --pubkey ed25519:... verdict.tar
 After `keygen`, every verdict is signed with ed25519. A bundle is a small tar file with `verdict.json` and `verdict.sig`. It says which report the verdict is about (ID, repository, commit, title and a SHA-256 of the report text) but does not contain the report, so it can be passed on without passing on an embargoed report. `verify-bundle` takes the public key from you, never from the bundle, and prints nothing from a bundle whose signature fails.
 
 A signature shows that the verdict came from the holder of that key and has not been changed. It does not make the verdict right.
+
+### Emailing verdicts
+
+Add an `smtp` section and `notify` addresses to the config, then pass `--notify`:
+
+```json
+{
+  "projects": [{ "repo": "owner/name", "notify": ["security@example.org"] }],
+  "smtp": { "addr": "smtp.example.org:587", "from": "kritolith@example.org",
+            "username": "kritolith", "password_env": "KRITOLITH_SMTP_PASSWORD" }
+}
+```
+
+```sh
+kritolith ingest --eml --config kritolith.json --notify < message.eml
+```
+
+Mail is sent only when `--notify` is given. Kritolith requires TLS (STARTTLS, or TLS from the start on port 465) for any server that is not on the same machine, and will not send the verdict or the password without it. If delivery fails the verdict is still stored and printed, and the command exits non-zero.
 
 An LLM is optional and off by default. To use one for claim extraction and embeddings, copy [`kritolith.example.json`](kritolith.example.json) and pass it with `--config`.
 
@@ -182,25 +227,35 @@ Version 1 deliberately stays narrow.
 - [ ] gVisor sandbox with hostile-PoC hardening
 - [x] Intake from email (`ingest --eml`) and from a GitHub security advisory (`check --ghsa`)
 - [x] Signed verdicts and evidence bundles (`keygen`, `--bundle`, `verify-bundle`)
-- [ ] Email delivery of verdicts, webhook server
+- [x] Email delivery of verdicts (`--notify`)
+- [x] Webhook server for GitHub private reports (`serve`)
 - [x] Public threat model ([docs/threat-model.md](docs/threat-model.md)) and fuzz tests for every parser of hostile input
 - [ ] Install docs, first release
 
 ## Where it stands
 
-Progress is measured on a public eval corpus in [`testdata/corpus`](testdata/corpus): 20 real Go advisories and 20 deliberately fabricated reports. `make eval` prints the scoreboard. Results on 2026-11-11, with no LLM configured:
+Progress is measured on a public eval corpus in [`testdata/corpus`](testdata/corpus): 24 real Go advisories and 20 deliberately fabricated reports. `make eval` prints the scoreboard. Results on 2026-11-11, with no LLM configured:
 
 | Target | v1 goal | Now |
 |---|---|---|
-| Real reports wrongly marked `GROUNDING_FAILED` | **0** | **0 of 20** |
-| Real reports wrongly marked `LIKELY_DUPLICATE` | **0** | **0 of 20** |
-| Fabricated reports with fake code caught by grounding | ≥ 80% | 7 of 15 (47%) |
+| Real reports wrongly marked `GROUNDING_FAILED` | **0** | **0 of 24** |
+| Real reports wrongly marked `LIKELY_DUPLICATE` | **0** | **0 of 24** |
+| Fabricated reports with fake code caught by grounding | ≥ 80% | 9 of 15 (60%) |
 | Duplicate top-1 accuracy | ≥ 80% | 3 of 3 |
-| Real reports with runnable PoCs reproduced | ≥ 60% | 0 of 20: the sandbox is not built |
+| Real reports with runnable PoCs reproduced | ≥ 60% | 0 of 20 with a PoC: the sandbox is not built |
 
-The eight fabricated reports that are not caught cite an invented package-level function, the wrong package, or an invented file by bare name (`remote_fetch.go` rather than `internal/remote_fetch.go`). Kritolith answers `INCONCLUSIVE` for those and shows "not found" in the evidence, instead of risking a wrong rejection: real reports name functions and files from the standard library, a dependency or an upstream project all the time. Overall, 12 of 40 cases get exactly the expected verdict; all 20 real advisories are `INCONCLUSIVE` today because their expected verdict needs the PoC to run.
+The six fabricated reports that are not caught cite an invented package-level function by bare name, or an invented file by bare name (`remote_fetch.go` rather than `internal/remote_fetch.go`). Kritolith answers `INCONCLUSIVE` for those and shows "not found" in the evidence, instead of risking a wrong rejection: real reports name functions and files from the standard library, a dependency or an upstream project all the time. What it does reject is a claim tied to this repository: a method on one of its types, a file in one of its directories, a package under its own module path. Overall, 14 of 44 cases get exactly the expected verdict; the 24 real advisories are `INCONCLUSIVE` today because their expected verdict needs the sandbox.
 
-The corpus reports are written for the corpus, so the same build was also run over the text of 46 published security advisories from those projects, fetched with `kritolith check --ghsa`. That found two ways a genuine advisory could be rejected, both fixed: a link such as `pkg.go.dev/...` was read as a file named `pkg.go`, and a file in an upstream project cited by bare name was treated as missing from this one. After the fixes, none of the 46 has a file or function wrongly marked as absent. The catch rate above was 11 of 15 before the second fix; the lower number is the price of not rejecting those reports.
+Most corpus reports are written for the corpus, so the build is also run over the text of published security advisories, fetched with `kritolith check --ghsa`: 200 advisories from 35 Go projects at the last count. Those runs found four ways a genuine advisory could be rejected, all fixed, and each is now a corpus case:
+
+| What the advisory did | What went wrong | Case |
+|---|---|---|
+| Linked to `pkg.go.dev/...` | `pkg.go` was read as a claimed file | `ghsa-mh63-6h87-95cp` |
+| Cited a file in the upstream project by bare name | Treated as missing from this repository | `ghsa-g6w5-3rhc-c379` |
+| Used markdown links with relative targets (`/caddy/admin.go#L719`) | The target was read as a file path | `ghsa-gx7w-56w6-g48x` |
+| Told the maintainer to save a new test file | The file "did not exist" | `ghsa-9pmm-cxww-rrr7` |
+
+The second fix is why four fabricated reports that cite a file by bare name are no longer rejected.
 
 ## How this project is built
 

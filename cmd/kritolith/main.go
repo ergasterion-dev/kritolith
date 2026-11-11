@@ -21,6 +21,7 @@ const usage = `Usage: kritolith <command> [flags]
 Commands:
   check     verify a single report: a file, or a GitHub advisory with --ghsa
   ingest    verify a report from a raw email message (--eml)
+  serve     receive GitHub webhooks and verify each new private report
   keygen    create the ed25519 key that signs verdicts
   verify-bundle
             check a signed evidence bundle
@@ -56,6 +57,8 @@ func runIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 		return runCheck(ctx, args[1:], stdout, stderr)
 	case "ingest":
 		return runIngest(ctx, args[1:], stdin, stdout, stderr)
+	case "serve":
+		return runServe(ctx, args[1:], stdout, stderr)
 	case "keygen":
 		return runKeygen(ctx, args[1:], stdout, stderr)
 	case "verify-bundle":

@@ -138,7 +138,7 @@ func TestOpenPragmasAndMigrations(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil || fk != 1 {
 		t.Fatalf("foreign_keys = %d, %v", fk, err)
 	}
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
 		t.Fatalf("user_version = %d, %v", version, err)
 	}
 	s.Close()

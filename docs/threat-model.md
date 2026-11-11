@@ -53,6 +53,17 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - The subject and Message-ID pass through `Printable` and are cut to a fixed length. The sender's address is not stored.
 - Mail headers are not authenticated. Kritolith does not check SPF, DKIM or who sent a message, and nothing it does depends on the sender.
 
+### The webhook server (`kritolith serve`)
+
+- The endpoint is on the network, so the signature is everything. The raw body is checked against `X-Hub-Signature-256` (HMAC-SHA256, constant-time comparison) before any of it is parsed. A delivery that fails gets a 401 with no detail. The server will not start with a secret shorter than 16 characters.
+- A verified delivery contributes two values: the repository name and the advisory ID, both validated. The report itself is then fetched from GitHub's API. Nothing else in a webhook body is used.
+- A repository that is not a configured project is ignored, even with a valid signature.
+- The server listens on loopback by default and has read, write and header timeouts and a 5 MiB body cap. It serves the webhook path and a health check and nothing else. It does not terminate TLS.
+- Deliveries are idempotent: one job per repository and advisory ID, however often GitHub redelivers.
+- Jobs are processed one at a time, retried with backoff, and given back to the queue on shutdown. Error text stored with a job is made printable and cut to 500 bytes.
+- Logs carry job, repository, advisory ID and outcome. They never carry report text, the token or the webhook secret.
+- Anyone who learns the webhook secret can make the server fetch and process reports for the configured projects; they cannot make it process anything else, and they cannot supply a report's content.
+
 ### Extract
 
 - The deterministic extractor is regular expressions over the report text (Go's `regexp`, which runs in linear time). Fenced code blocks are removed first, so code in a PoC is not read as a claim. Links are removed before files and functions are read, so `pkg.go.dev` is not a file called `pkg.go`. Output is capped at 50 claims per kind.
@@ -69,6 +80,7 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - A file is marked missing only if the report names it with a directory that exists in the repository. A bare `foo.go` may be a file in the standard library, a dependency or an upstream project, so "not found" for it is shown as evidence and never counts against the report.
 - Limits: 5,000 Go files per commit, a size cap per file checked before any content is read, and 20 fallback version candidates per report.
 - A claim is marked false only when its absence is proven: the scan covered the whole tree, the name is bound to this repository (a method on a type declared here with a closed method set, or an unexported name in a package declared here), and the name appears nowhere in the repository's tracked text. Anything else stays `unknown`. A git failure is an error, never "not found".
+- A package is checked only when the report calls an import path a package ("the `github.com/owner/name/internal/auth` package") and that path is under the module path in the repository's own `go.mod`. Then the directory either holds Go files or it doesn't. A path under another module, another major version (`/v2/`), or a web page (`/issues/12`) is never counted against a report.
 - A wrong line number alone never fails a report.
 - If the named ref does not resolve and grounding falls back to a version mentioned in the text, a missing file or function gives `INCONCLUSIVE`, not `GROUNDING_FAILED`.
 
@@ -90,6 +102,14 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - A bundle holds the signed bytes and a detached signature, and never the report text.
 - `verify-bundle` treats a bundle as hostile: exactly two regular files with fixed names, size-capped, read in memory and never extracted to disk. The public key comes from the operator, never from the bundle. The signature is checked over the bytes as received, before any of them are parsed, and nothing from a bundle that fails is printed.
 - A signature proves who issued a verdict and that it is unchanged. It says nothing about whether the verdict is correct, and a stolen key signs anything.
+
+### Email delivery (`--notify`)
+
+- Nothing is emailed unless `--notify` is given. Recipients come only from the project's `notify` list in the config; a report cannot add one.
+- A verdict describes an unfixed vulnerability. To any server that is not on the same machine, Kritolith sends only over verified TLS (STARTTLS, or TLS from the first byte on port 465). A server that offers no TLS, or a certificate that does not verify, is a failure; there is no fallback to cleartext. The password is never sent without TLS.
+- The SMTP password is read from an environment variable named in the config, never from the config file.
+- The report's title is the only report text in a header. It passes through `Printable`, which removes line breaks, so it cannot add a header. The body is base64, so no line of report text is ever read by a mail server as an SMTP command or a header.
+- Email is only as private as the mailboxes it lands in. The verdict contains the claims the report makes.
 
 ### Storage and logs
 
@@ -124,7 +144,7 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 
 These are real and not yet fixed.
 
-- **Fabrications that stay under the bar.** A report that invents a package-level function, or cites an invented file by bare name, gets `INCONCLUSIVE` with "not found" in the evidence, not `GROUNDING_FAILED`. On the eval corpus 7 of 15 fabricated reports are rejected outright.
+- **Fabrications that stay under the bar.** A report that invents a package-level function, or cites an invented file by bare name, gets `INCONCLUSIVE` with "not found" in the evidence, not `GROUNDING_FAILED`. On the eval corpus 9 of 15 fabricated reports are rejected outright.
 - **No import resolution.** Grounding cannot tell a type declared in this repository from a same-named type in the standard library or a dependency. A report about the external type's method can, in a narrow case, be judged against the local type. This is the one known route to a wrong `GROUNDING_FAILED`; the eval corpus has no instance of it.
 - **A stale mirror plus a force-push.** A commit that was on a branch when the mirror last fetched, and has since been removed upstream, still resolves.
 - **Tags are trusted.** Anyone who can push a tag to the repository can make a commit count as the project's code.
@@ -138,7 +158,6 @@ These are real and not yet fixed.
 
 - **Sandbox.** PoC code will be built and run under gVisor with no network in the build and run phases, a read-only source tree, and limits on time, memory, CPU, process count and output size. The signing key, GitHub App key, Docker socket and host environment never enter it. A crash counts as reproduced only if the claimed function is in the stack or race report. Until this exists, Kritolith does not run PoCs at all.
 - **Key isolation from the sandbox.** The signing key must never be readable from inside a sandbox. Today nothing runs reporter code, so there is nothing to isolate it from.
-- **Webhook server.** Every delivery will be checked against the webhook secret's HMAC before any parsing.
 
 ## Fuzz targets
 
@@ -157,6 +176,7 @@ Each target checks a property, not only "does not crash".
 | `file.FuzzTitle` | The title is one printable line of bounded length |
 | `verdict.FuzzReadBundle` | Arbitrary bytes are accepted as a bundle only if they are the signed document |
 | `eml.FuzzLoad` | Any bytes as a message give a bounded, valid-UTF-8 body and safe, distinct attachment names within the size caps |
+| `github.FuzzParseWebhook` | A webhook body yields only a valid repository name and advisory ID |
 | `github.FuzzBody` | Advisory fields cannot add lines of their own to the report text |
 
 Run one with:
