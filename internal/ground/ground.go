@@ -296,7 +296,18 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 		c.Evidence = fmt.Sprintf("not found at that exact path at %s; %s, so other locations weren't all checked", short, idx.incomplete)
 		return
 	}
-	if dir := path.Dir(c.Value); dir != "." && !idx.hasDirSuffix(dir) {
+	dir := path.Dir(c.Value)
+	if dir == "." {
+		// A file name with no directory doesn't say whose file it is.
+		// Reports mention files in the standard library, in a
+		// dependency, or in the project this one was forked from, by
+		// name alone. Only a path that names one of this repository's
+		// own directories is a claim about this repository.
+		c.Verified = report.TriUnknown
+		c.Evidence = fmt.Sprintf("no file of that name anywhere in the repository at %s; a file name without a directory may belong to another project, so this isn't proof", short)
+		return
+	}
+	if !idx.hasDirSuffix(dir) {
 		c.Verified = report.TriUnknown
 		c.Evidence = fmt.Sprintf("not found at %s, and no directory %s exists in the repository, so it may be a standard library or dependency path", short, report.Printable(dir))
 		return

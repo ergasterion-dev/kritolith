@@ -166,15 +166,16 @@ func TestGroundFileClaimPathSuffix(t *testing.T) {
 	}
 	claims := []report.Claim{
 		{Kind: report.ClaimFile, Value: "frame.go"},        // real file, cited relative to its package dir
-		{Kind: report.ClaimFile, Value: "shell_expand.go"}, // invented (fab-002)
+		{Kind: report.ClaimFile, Value: "shell_expand.go"}, // invented (fab-002), but a bare name proves nothing
 		{Kind: report.ClaimFile, Value: "http2/frame.go"},  // exact
+		{Kind: report.ClaimFile, Value: "http2/shell_expand.go"},
 	}
 	r := report.Report{ID: "R1", Repo: "owner/name", ClaimedRef: commit}
 	grounded, _, _, _, _, err := groundClaims(context.Background(), m, r, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []report.Tri{report.TriUnknown, report.TriNo, report.TriYes}
+	want := []report.Tri{report.TriUnknown, report.TriUnknown, report.TriYes, report.TriNo}
 	for i := range want {
 		if grounded[i].Verified != want[i] {
 			t.Errorf("%s: Verified = %s, want %s; evidence: %s", grounded[i].Value, grounded[i].Verified, want[i], grounded[i].Evidence)
@@ -440,7 +441,7 @@ func TestGroundFileClaimExternalLookingPaths(t *testing.T) {
 		"v1.0.0/baz/qux.go",     // extracted from /root/go/pkg/mod/github.com/foo/bar@v1.0.0/baz/qux.go:123
 		"http2/missing.go",      // real directory, invented file
 		"repo/http2/missing.go", // directory matches as a suffix... of nothing: "repo/http2" isn't a dir
-		"missing.go",            // bare filename
+		"missing.go",            // bare filename: could be any project's file
 		"http2/frame.go",        // exact
 		"frame.go",              // suffix of a real file
 	}, nil)
@@ -449,7 +450,7 @@ func TestGroundFileClaimExternalLookingPaths(t *testing.T) {
 		"v1.0.0/baz/qux.go":     report.TriUnknown,
 		"http2/missing.go":      report.TriNo,
 		"repo/http2/missing.go": report.TriUnknown,
-		"missing.go":            report.TriNo,
+		"missing.go":            report.TriUnknown,
 		"http2/frame.go":        report.TriYes,
 		"frame.go":              report.TriUnknown,
 	})
@@ -518,5 +519,29 @@ func TestGroundFileClaimGitErrorIsNotAbsence(t *testing.T) {
 		if c.Verified != report.TriUnknown {
 			t.Errorf("%s with a failing git check: Verified = %s, want unknown; evidence: %s", value, c.Verified, c.Evidence)
 		}
+	}
+}
+
+// A real advisory described a regression by pointing at the project it
+// was forked from: "blackfriday v2 writes the counter (`html.go:927`)".
+// html.go is a real file, in another repository. A file name with no
+// directory says nothing about where the file lives, so its absence
+// here is not proof of anything and must never reject a report, even
+// when it is the only hard claim.
+func TestGroundBareFileNameIsNeverDisproved(t *testing.T) {
+	grounded := groundValues(t, disproveFixture, report.ClaimFile, []string{"html.go", "http2/html.go"}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"html.go":       report.TriUnknown,
+		"http2/html.go": report.TriNo, // a directory of this repository is named: that is a claim about it
+	})
+	for _, c := range grounded {
+		if c.Value == "html.go" && !strings.Contains(c.Evidence, "no file of that name anywhere") {
+			t.Errorf("evidence = %q, want it to say the file was not found anywhere", c.Evidence)
+		}
+	}
+	v := verdict.Compose(report.Report{ID: "R1", ClaimedRef: "v1"},
+		verdict.StageResults{Claims: grounded[:1], GroundingRan: true, RefResolved: true})
+	if v.Outcome == report.OutcomeGroundingFailed {
+		t.Fatal("a bare file name from another project rejected the report")
 	}
 }

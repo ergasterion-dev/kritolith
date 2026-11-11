@@ -37,7 +37,7 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 
 ### Extract
 
-- The deterministic extractor is regular expressions over the report text (Go's `regexp`, which runs in linear time). Fenced code blocks are removed first, so code in a PoC is not read as a claim. Output is capped at 50 claims per kind.
+- The deterministic extractor is regular expressions over the report text (Go's `regexp`, which runs in linear time). Fenced code blocks are removed first, so code in a PoC is not read as a claim. Links are removed before files and functions are read, so `pkg.go.dev` is not a file called `pkg.go`. Output is capped at 50 claims per kind.
 - With an LLM configured, the model receives the report text and nothing else. It has no tools. Its reply is decoded as JSON with unknown fields rejected; any claim with an unknown kind, an empty value or a value over 500 bytes is dropped, and at most 50 are kept.
 - **A model's file, function, line or version claim is kept only if its value appears verbatim in the report.** The model can point at what the report says. It cannot add a name the reporter never wrote, so a hallucinated function cannot get a real report rejected.
 - No claim leaves extraction marked as verified. Only grounding sets that.
@@ -48,6 +48,7 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - Every git process is started with an argument list (no shell). `GIT_DIR`, `GIT_WORK_TREE` and related variables are removed from its environment, `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0` are set, and refs are passed after `--end-of-options`. Clones and fetches have a 30 minute cap and abort a stalled transfer after two minutes.
 - **The named commit must be reachable from a branch or tag.** A mirror also holds every pull request's head (`refs/pull/N/head`), and anyone can open a pull request. A commit that only a pull request leads to is treated as not found, so a reporter cannot add an invented function in a pull request and cite that commit as proof.
 - Claimed file paths with a `.` or `..` component, or a leading `/`, never reach git.
+- A file is marked missing only if the report names it with a directory that exists in the repository. A bare `foo.go` may be a file in the standard library, a dependency or an upstream project, so "not found" for it is shown as evidence and never counts against the report.
 - Limits: 5,000 Go files per commit, a size cap per file checked before any content is read, and 20 fallback version candidates per report.
 - A claim is marked false only when its absence is proven: the scan covered the whole tree, the name is bound to this repository (a method on a type declared here with a closed method set, or an unexported name in a package declared here), and the name appears nowhere in the repository's tracked text. Anything else stays `unknown`. A git failure is an error, never "not found".
 - A wrong line number alone never fails a report.
@@ -97,6 +98,7 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 
 These are real and not yet fixed.
 
+- **Fabrications that stay under the bar.** A report that invents a package-level function, or cites an invented file by bare name, gets `INCONCLUSIVE` with "not found" in the evidence, not `GROUNDING_FAILED`. On the eval corpus 7 of 15 fabricated reports are rejected outright.
 - **No import resolution.** Grounding cannot tell a type declared in this repository from a same-named type in the standard library or a dependency. A report about the external type's method can, in a narrow case, be judged against the local type. This is the one known route to a wrong `GROUNDING_FAILED`; the eval corpus has no instance of it.
 - **A stale mirror plus a force-push.** A commit that was on a branch when the mirror last fetched, and has since been removed upstream, still resolves.
 - **Tags are trusted.** Anyone who can push a tag to the repository can make a commit count as the project's code.

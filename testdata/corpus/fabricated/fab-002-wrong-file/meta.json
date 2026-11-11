@@ -3,5 +3,5 @@
   "ref": "40b5bc1437a564fc795d388b23835e84f54cd1d1",
   "expected_outcome": "GROUNDING_FAILED",
   "source": "fabricated",
-  "notes": "Invented file shell_expand.go and function expandShellArgs (tag v1.9.1)."
+  "notes": "Invented file shell_expand.go and function expandShellArgs (tag v1.9.1). Not caught today (INCONCLUSIVE): the invented file is cited by bare name, and a file name without a directory can belong to another project, so its absence is not treated as proof (see docs/threat-model.md, \"Known gaps\")."
 }
