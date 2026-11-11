@@ -83,6 +83,14 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - Every value that came from a report, a repository or a model passes through `report.Printable` before it is printed: control characters (including ESC and newlines), invalid UTF-8 and Unicode bidirectional overrides become `U+FFFD`. A report cannot move the cursor, recolor the terminal or reorder text in a verdict. Error messages get the same treatment.
 - The outcome is chosen by fixed rules in `internal/verdict`. No model output is consulted.
 
+### Signing and bundles
+
+- `kritolith keygen` writes an ed25519 key under `keys/` in the data directory, mode `0600`, apart from the database and the mirrors. It never replaces an existing key and refuses a symlink at the path. A key file that is readable by group or others, is a symlink, or does not parse is an error; Kritolith does not fall back to unsigned verdicts.
+- What is signed is a document holding the verdict and the report it is about: ID, repository, claimed ref, title and a SHA-256 of the report text. A signature over the verdict alone could be attached to a different report. A fixed context string is signed with it, so the key's signature on anything else is not a valid verdict signature.
+- A bundle holds the signed bytes and a detached signature, and never the report text.
+- `verify-bundle` treats a bundle as hostile: exactly two regular files with fixed names, size-capped, read in memory and never extracted to disk. The public key comes from the operator, never from the bundle. The signature is checked over the bytes as received, before any of them are parsed, and nothing from a bundle that fails is printed.
+- A signature proves who issued a verdict and that it is unchanged. It says nothing about whether the verdict is correct, and a stolen key signs anything.
+
 ### Storage and logs
 
 - The data directory must be owned by the current user and closed to group and others; Kritolith refuses to start otherwise. The SQLite file is created `0600` and is never opened through a symlink.
@@ -129,7 +137,7 @@ These are real and not yet fixed.
 ## Not built yet, and the rules it must meet
 
 - **Sandbox.** PoC code will be built and run under gVisor with no network in the build and run phases, a read-only source tree, and limits on time, memory, CPU, process count and output size. The signing key, GitHub App key, Docker socket and host environment never enter it. A crash counts as reproduced only if the claimed function is in the stack or race report. Until this exists, Kritolith does not run PoCs at all.
-- **Signing.** The ed25519 key will live outside the data files, `0600`, and never be readable from a sandbox.
+- **Key isolation from the sandbox.** The signing key must never be readable from inside a sandbox. Today nothing runs reporter code, so there is nothing to isolate it from.
 - **Webhook server.** Every delivery will be checked against the webhook secret's HMAC before any parsing.
 
 ## Fuzz targets
@@ -147,6 +155,7 @@ Each target checks a property, not only "does not crash".
 | `ground.FuzzValidateClaimPath` | Accepted paths stay inside the tree |
 | `ground.FuzzReadBatch` | Arbitrary `git cat-file --batch` output is answered in order, within the size cap, with an error if any path goes unanswered |
 | `file.FuzzTitle` | The title is one printable line of bounded length |
+| `verdict.FuzzReadBundle` | Arbitrary bytes are accepted as a bundle only if they are the signed document |
 | `eml.FuzzLoad` | Any bytes as a message give a bounded, valid-UTF-8 body and safe, distinct attachment names within the size caps |
 | `github.FuzzBody` | Advisory fields cannot add lines of their own to the report text |
 

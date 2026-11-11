@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +31,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	cfgPath := fs.String("config", "", "path to kritolith.json")
 	dataDir := fs.String("data-dir", "", "data directory (overrides config)")
 	asJSON := fs.Bool("json", false, "print the verdict as JSON")
+	bundle := fs.String("bundle", "", "also write the signed evidence bundle to this file (needs a key from `kritolith keygen`)")
 	ghsa := fs.String("ghsa", "", "read the report from this GitHub security advisory (GHSA-xxxx-xxxx-xxxx) instead of a file; needs a token in GITHUB_TOKEN or GH_TOKEN")
 	apiURL := fs.String("github-api-url", github.DefaultAPIURL, "GitHub REST API base URL (GitHub Enterprise Server: https://host/api/v3)")
 	fs.Usage = func() {
@@ -89,18 +91,40 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(stderr, err)
 		}
 	}
-	return runReport(ctx, r, cfg, dir, *asJSON, stdout, stderr)
+	return runReport(ctx, r, cfg, dir, output{json: *asJSON, bundle: *bundle}, stdout, stderr)
+}
+
+// output says how a verdict should leave the process.
+type output struct {
+	json   bool   // print JSON instead of the text summary
+	bundle string // also write the signed evidence bundle here
 }
 
 // runReport sends one report through the pipeline and prints its
 // verdict. Every intake command ends here, so a report is handled the
 // same way however it arrived.
-func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir string, asJSON bool, stdout, stderr io.Writer) int {
+func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir string, out output, stdout, stderr io.Writer) int {
 	st, err := store.Open(ctx, dir)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	defer st.Close()
+
+	// Signing is on once a key exists. A key that exists but can't be
+	// used is an error, never a reason to carry on unsigned.
+	var signer *verdict.Signer
+	key, haveKey, err := verdict.LoadKey(dir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if haveKey {
+		if signer, err = verdict.NewSigner(key, nil); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	if out.bundle != "" && signer == nil {
+		return fail(stderr, errors.New("--bundle needs a signing key: run `kritolith keygen` first"))
+	}
 
 	var router *llm.Router
 	if cfg != nil {
@@ -113,12 +137,20 @@ func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir str
 	if router != nil {
 		p = p.WithLLM(router)
 	}
+	if signer != nil {
+		p = p.WithSigner(signer)
+	}
 
 	v, err := p.Run(ctx, r)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	if asJSON {
+	if out.bundle != "" {
+		if err := writeBundleFile(out.bundle, r, v, signer.PublicKey()); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	if out.json {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(v); err != nil {
@@ -141,4 +173,23 @@ func githubToken(getenv func(string) string) (string, error) {
 		}
 	}
 	return "", errors.New("--ghsa needs a GitHub token in GITHUB_TOKEN or GH_TOKEN; it must be able to read the repository's security advisories")
+}
+
+// writeBundleFile writes the evidence bundle to path. It never
+// replaces an existing file: a bundle is a record.
+func writeBundleFile(path string, r report.Report, v report.Verdict, pub ed25519.PublicKey) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("write bundle: %w", err)
+	}
+	if err := verdict.WriteBundle(f, r, v, pub); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return fmt.Errorf("write bundle: %w", err)
+	}
+	return nil
 }

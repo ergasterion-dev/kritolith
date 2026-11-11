@@ -27,6 +27,12 @@ type Pipeline struct {
 	llmChain llmextract.Chain // nil when no LLM is configured
 	grounder ground.Grounder  // nil when no Grounder is configured
 	deduper  dedupe.Deduper   // nil when no Deduper is configured
+	signer   Signer           // nil when no signing key exists
+}
+
+// Signer signs a composed verdict. *verdict.Signer implements it.
+type Signer interface {
+	Sign(r report.Report, v report.Verdict) (report.Verdict, error)
 }
 
 // New returns a Pipeline that persists to s, with no LLM or Grounder
@@ -56,6 +62,14 @@ func (p *Pipeline) WithGround(g ground.Grounder) *Pipeline {
 // caller that doesn't wire one in.
 func (p *Pipeline) WithDedupe(d dedupe.Deduper) *Pipeline {
 	p.deduper = d
+	return p
+}
+
+// WithSigner returns p configured to sign each verdict before it is
+// stored. A nil signer (New's default) leaves verdicts unsigned:
+// signing is optional and starts when the operator runs `keygen`.
+func (p *Pipeline) WithSigner(s Signer) *Pipeline {
+	p.signer = s
 	return p
 }
 
@@ -94,6 +108,16 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 		res.DedupeExactMatch = exactMatch
 	}
 	v := verdict.Compose(r, res)
+	if p.signer != nil {
+		// A key is configured, so an unsigned verdict must not go out
+		// looking like a signed deployment's: failing here is safer
+		// than quietly storing it unsigned.
+		signed, err := p.signer.Sign(r, v)
+		if err != nil {
+			return report.Verdict{}, fmt.Errorf("pipeline: sign verdict: %w", err)
+		}
+		v = signed
+	}
 	if err := p.store.SaveVerdict(ctx, v); err != nil {
 		return report.Verdict{}, fmt.Errorf("pipeline: save verdict: %w", err)
 	}

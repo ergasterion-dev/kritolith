@@ -145,6 +145,9 @@ func Render(r report.Report, v report.Verdict) string {
 		fmt.Fprintf(&b, "• %s\n", report.Printable(n))
 	}
 	fmt.Fprintf(&b, "Report: %s (%s)\n", report.Printable(r.ID), report.Printable(r.Repo))
+	if len(v.Signature) > 0 {
+		fmt.Fprintf(&b, "Signed: %s (ed25519)\n", v.SignedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+	}
 	return b.String()
 }
 

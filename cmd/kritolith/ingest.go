@@ -23,6 +23,7 @@ func runIngest(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	cfgPath := fs.String("config", "", "path to kritolith.json")
 	dataDir := fs.String("data-dir", "", "data directory (overrides config)")
 	asJSON := fs.Bool("json", false, "print the verdict as JSON")
+	bundle := fs.String("bundle", "", "also write the signed evidence bundle to this file (needs a key from `kritolith keygen`)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: kritolith ingest --eml --repo owner/name [--ref sha] < message.eml")
 		fmt.Fprintln(stderr, "       kritolith ingest --eml --repo owner/name [--ref sha] message.eml")
@@ -81,5 +82,5 @@ func runIngest(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	if err != nil {
 		return fail(stderr, err)
 	}
-	return runReport(ctx, r, cfg, dir, *asJSON, stdout, stderr)
+	return runReport(ctx, r, cfg, dir, output{json: *asJSON, bundle: *bundle}, stdout, stderr)
 }
