@@ -14,7 +14,7 @@ Reproducing the PoC in a locked-down sandbox and signing the verdict are next on
 [![Self-hosted](https://img.shields.io/badge/self--hosted-local--LLM%20first-6f42c1.svg)](#privacy-and-llms)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Try it](#try-it) · [How it works](#how-it-works) · [Verdicts](#verdicts) · [Where it stands](#where-it-stands) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Try it](#try-it) · [How it works](#how-it-works) · [Verdicts](#verdicts) · [Where it stands](#where-it-stands) · [Roadmap](#roadmap) · [Threat model](docs/threat-model.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 </div>
 
@@ -177,6 +177,12 @@ Progress is measured on a public eval corpus in [`testdata/corpus`](testdata/cor
 The eight fabricated reports that are not caught cite an invented package-level function, the wrong package, or an invented file by bare name (`remote_fetch.go` rather than `internal/remote_fetch.go`). Kritolith answers `INCONCLUSIVE` for those and shows "not found" in the evidence, instead of risking a wrong rejection: real reports name functions and files from the standard library, a dependency or an upstream project all the time. Overall, 12 of 40 cases get exactly the expected verdict; all 20 real advisories are `INCONCLUSIVE` today because their expected verdict needs the PoC to run.
 
 The corpus reports are written for the corpus, so the same build was also run over the text of 46 published security advisories from those projects, fetched with `kritolith check --ghsa`. That found two ways a genuine advisory could be rejected, both fixed: a link such as `pkg.go.dev/...` was read as a file named `pkg.go`, and a file in an upstream project cited by bare name was treated as missing from this one. After the fixes, none of the 46 has a file or function wrongly marked as absent. The catch rate above was 11 of 15 before the second fix; the lower number is the price of not rejecting those reports.
+
+## How this project is built
+
+Kritolith exists because of AI-generated noise in security inboxes, so it is fair to ask how it was made. AI coding assistants wrote much of the code, tests and documentation here, under the maintainer's direction and review. The design notes and implementation plans they worked from are in [`docs/superpowers`](docs/superpowers), and [`CLAUDE.md`](CLAUDE.md) is the brief they are given.
+
+None of that is part of what the tool decides. A verdict comes from `git`, Go's parser and fixed rules; with no LLM configured, which is the default, no model is involved at any point. You don't have to take the results on trust either: the [eval corpus](testdata/corpus) and `make eval` reproduce the scoreboard above, and the [threat model](docs/threat-model.md) lists what is known to be weak.
 
 ## Contributing
 
