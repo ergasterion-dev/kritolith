@@ -25,6 +25,9 @@ const (
 	ClaimVersion   ClaimKind = "version"
 	ClaimVulnClass ClaimKind = "vuln_class"
 	ClaimSink      ClaimKind = "sink"
+	// ClaimPackage is a Go package named by its full import path
+	// ("github.com/owner/name/internal/auth").
+	ClaimPackage ClaimKind = "package"
 )
 
 // Tri is a three-valued verification result.

@@ -1,0 +1,7 @@
+{
+  "repo": "caddyserver/caddy",
+  "ref": "ffb6ab0644f24c5ee6542aca6bd59b7a1b0a8f91",
+  "expected_outcome": "NEEDS_INFO",
+  "source": "GHSA-gx7w-56w6-g48x",
+  "notes": "Real advisory, written in our own words, keeping the link shape of the published text: markdown links whose targets are relative paths on the code host that begin with the repository's name ((/caddy/admin.go#L719)). Regression case: on 2026-11-11 such a target was read as a claimed file caddy/admin.go, which does not exist (admin.go is at the root, and cmd/caddy makes 'caddy' look like a directory), and marked missing. ref is tag v2.11.2, the last affected release; admin.go:719 there has the HasPrefix comparison and enforceAccessControls is at admin.go:691. No PoC is attached, so the verdict a finished tool should give is NEEDS_INFO; until the sandbox exists it is INCONCLUSIVE."
+}

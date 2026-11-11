@@ -29,7 +29,22 @@ var (
 	shaRe           = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	fenceRe         = regexp.MustCompile("(?s)```[A-Za-z0-9_+-]*\\n(.*?)```")
 	reproduceHdrRe  = regexp.MustCompile(`(?m)^##\s+Reproduce\b`)
+	linkTargetRe    = regexp.MustCompile(`\]\([^)\s]*\)`)
 )
+
+// importPath matches a Go import path with a host: "golang.org/x/net/http2",
+// "github.com/owner/name/internal/auth".
+const importPath = `[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}(?:/[A-Za-z0-9._~-]+)+`
+
+// packageRes find an import path the report explicitly calls a
+// package. The wording is required: a host and a path on their own
+// are just as likely a link to an issue or a web page, and a package
+// claim is one that can reject a report.
+var packageRes = []*regexp.Regexp{
+	regexp.MustCompile("`(" + importPath + ")`\\s+(?i:packages?)\\b"),
+	regexp.MustCompile("(?i:\\bpackage)\\s+`(" + importPath + ")`"),
+	regexp.MustCompile(`\bimport\s+"(` + importPath + `)"`),
+}
 
 // domainLikeSuffixes are segments after the last dot in a dotRe match
 // that mean the match is an import path or URL host, not a genuine
@@ -78,6 +93,7 @@ func Extract(body string) []report.Claim {
 	claims = append(claims, fileClaims(plain)...)
 	claims = append(claims, lineClaims(plain)...)
 	claims = append(claims, funcClaims(plain)...)
+	claims = append(claims, packageClaims(plain)...)
 	claims = append(claims, versionAndSHAClaims(prose)...)
 	claims = append(claims, vulnClassClaims(stripReproduceSection(prose))...)
 	return dedupe(claims)
@@ -102,6 +118,14 @@ func stripFencedCodeBlocks(body string) string {
 // Real advisories link to documentation constantly, so this would
 // reject genuine reports. The visible text of a markdown link is kept.
 func stripURLs(body string) string {
+	// The target of a markdown link goes first, whatever it is: a
+	// relative target such as "](/caddy/admin.go#L719)" is a location
+	// on a web site, with the site's own path prefix, and has no
+	// scheme for the scan below to find. The link's visible text
+	// stays.
+	if strings.Contains(body, "](") {
+		body = linkTargetRe.ReplaceAllString(body, "]")
+	}
 	if !strings.Contains(body, "://") {
 		return body
 	}
@@ -198,6 +222,21 @@ func fileClaims(body string) []report.Claim {
 			continue
 		}
 		out = append(out, newClaim(report.ClaimFile, match))
+	}
+	return out
+}
+
+// packageClaims matches import paths the report calls a package:
+// "the `host/path` package", "package `host/path`", `import "host/path"`.
+func packageClaims(body string) []report.Claim {
+	var out []report.Claim
+	for _, re := range packageRes {
+		for _, m := range re.FindAllStringSubmatch(body, maxPerKind) {
+			if len(out) >= maxPerKind {
+				return out
+			}
+			out = append(out, newClaim(report.ClaimPackage, m[1]))
+		}
 	}
 	return out
 }

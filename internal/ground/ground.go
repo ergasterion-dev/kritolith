@@ -14,10 +14,13 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
-const (
-	maxGoFiles      = 5000 // bound the work on pathologically large repos
-	maxFallbackRefs = 20   // bound how many ClaimVersion values become ref candidates
-)
+// maxGoFiles bounds the work on pathologically large repos. It is a
+// var so tests can lower it.
+var maxGoFiles = 5000
+
+// maxFallbackRefs bounds how many ClaimVersion values become ref
+// candidates.
+const maxFallbackRefs = 20
 
 // groundClaims checks r's claimed ref (falling back to any
 // ClaimVersion values already in claims) and grounds every
@@ -59,6 +62,8 @@ func groundClaims(ctx context.Context, m *Mirror, r report.Report, claims []repo
 			groundFunctionClaim(&out[i], idx)
 		case report.ClaimLine:
 			groundLineClaim(ctx, m, commit, &out[i], idx.get().decls)
+		case report.ClaimPackage:
+			groundPackageClaim(commit, &out[i], idx)
 		}
 	}
 	// Read go.mod directly here rather than through idx.get(): forcing
@@ -291,6 +296,33 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 			return
 		}
 	}
+	// The path may carry leading elements that aren't part of the
+	// tree: the repository's own name ("caddy/admin.go"), a module
+	// path, a checkout directory. If dropping leading elements gives a
+	// file that exists, the reporter most likely meant that file.
+	for rest := c.Value; ; {
+		_, tail, ok := strings.Cut(rest, "/")
+		if !ok {
+			break
+		}
+		rest = tail
+		for _, f := range idx.files {
+			if f == rest || strings.HasSuffix(f, "/"+rest) {
+				c.Verified = report.TriUnknown
+				c.Evidence = fmt.Sprintf("not at that exact path at %s, but %s exists", short, report.Printable(f))
+				return
+			}
+		}
+	}
+	if strings.HasSuffix(c.Value, "_test.go") {
+		// Reports routinely name a test file that isn't there: the
+		// PoC they ask you to save ("write the test below to
+		// plugin/rewrite/poc_test.go"), or a regression test added
+		// with the fix. Its absence says nothing about the report.
+		c.Verified = report.TriUnknown
+		c.Evidence = fmt.Sprintf("not found at %s; a missing test file may be one the report asks you to add, so this isn't proof", short)
+		return
+	}
 	if !idx.listed {
 		c.Verified = report.TriUnknown
 		c.Evidence = fmt.Sprintf("not found at that exact path at %s; %s, so other locations weren't all checked", short, idx.incomplete)
@@ -314,6 +346,97 @@ func groundFileClaim(ctx context.Context, m *Mirror, commit string, c *report.Cl
 	}
 	c.Verified = report.TriNo
 	c.Evidence = fmt.Sprintf("not found at %s", short)
+}
+
+// webPathSegments are first path elements that follow a repository's
+// URL on a code host and are pages, not packages. A report that
+// writes "github.com/owner/name/issues/12" without a scheme must not
+// be read as naming a package called "issues/12".
+var webPathSegments = map[string]bool{
+	"issues": true, "pull": true, "pulls": true, "blob": true, "tree": true, "commit": true,
+	"commits": true, "releases": true, "security": true, "wiki": true, "actions": true,
+	"compare": true, "discussions": true, "tags": true, "archive": true, "raw": true,
+	"blame": true, "projects": true, "milestones": true, "labels": true, "branches": true,
+	"graphs": true, "network": true, "pulse": true, "settings": true, "advisories": true,
+	"-": true, "merge_requests": true,
+}
+
+// groundPackageClaim checks a package named by import path. Only a
+// path under this repository's own module path (the "module" line of
+// go.mod at the commit) is a claim about this repository: it says
+// which directory the package is in. Such a claim is marked false
+// when that directory holds no Go files, and true when it does.
+//
+// Everything else stays unknown: a path under another module (a
+// dependency), a repository with no go.mod, an incomplete scan, a
+// first element that is a major version ("v2", which may live on
+// another branch) or a web page ("issues"), and a directory that
+// exists under a different letter case.
+func groundPackageClaim(commit string, c *report.Claim, l *lazyIndex) {
+	idx := l.get()
+	short := shortSHA(commit)
+	value := strings.TrimSuffix(strings.TrimSpace(c.Value), "/")
+	c.Verified = report.TriUnknown
+	if idx.module == "" {
+		c.Evidence = fmt.Sprintf("the repository has no go.mod at %s, so an import path can't be tied to it", short)
+		return
+	}
+	if value == idx.module {
+		c.Verified = report.TriYes
+		c.Evidence = fmt.Sprintf("is the module path at %s", short)
+		return
+	}
+	sub, ok := strings.CutPrefix(value, idx.module+"/")
+	if !ok {
+		c.Evidence = fmt.Sprintf("not under this repository's module path %s; it may be a dependency", report.Printable(idx.module))
+		return
+	}
+	if ValidateClaimPath(sub) != nil || strings.Contains(sub, "//") {
+		c.Evidence = "not a usable package path"
+		return
+	}
+	if idx.dirs[sub] {
+		c.Verified = report.TriYes
+		c.Evidence = fmt.Sprintf("package directory %s exists at %s", report.Printable(sub), short)
+		return
+	}
+	first, _, _ := strings.Cut(sub, "/")
+	switch {
+	case !idx.listed:
+		c.Evidence = fmt.Sprintf("no directory %s found at %s, but %s, so its absence isn't proven", report.Printable(sub), short, idx.incomplete)
+		return
+	case webPathSegments[first]:
+		c.Evidence = fmt.Sprintf("%s looks like a web page path, not a package", report.Printable(sub))
+		return
+	case isMajorVersion(first):
+		c.Evidence = fmt.Sprintf("names major version %s of the module, which may live on another branch", report.Printable(first))
+		return
+	}
+	for d := range idx.dirs {
+		if strings.EqualFold(d, sub) {
+			c.Evidence = fmt.Sprintf("no directory %s at %s, but %s exists", report.Printable(sub), short, report.Printable(d))
+			return
+		}
+	}
+	c.Verified = report.TriNo
+	c.Evidence = fmt.Sprintf("module %s has no package directory %s at %s", report.Printable(idx.module), report.Printable(sub), short)
+	if d := closestDir(idx.dirs, sub); d != "" {
+		c.Evidence += "; closest: " + report.Printable(d)
+	}
+}
+
+// closestDir returns the directory nearest to want by edit distance,
+// preferring the alphabetically first on a tie so the answer doesn't
+// depend on map order.
+func closestDir(dirs map[string]bool, want string) string {
+	best, bestDist := "", -1
+	for d := range dirs {
+		dist := levenshtein(want, d)
+		if bestDist < 0 || dist < bestDist || (dist == bestDist && d < best) {
+			best, bestDist = d, dist
+		}
+	}
+	return best
 }
 
 // groundFunctionClaim sets Verified: yes when a matching func/method

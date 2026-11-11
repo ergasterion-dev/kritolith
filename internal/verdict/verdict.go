@@ -87,7 +87,7 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 		v.Notes = append(v.Notes, "grounded via a fallback version, not the claimed commit — treating a hard-claim failure as inconclusive rather than a rejection")
 	case res.GroundingRan && hardClaimFailed(res.Claims):
 		v.Outcome = report.OutcomeGroundingFailed
-		v.Notes = append(v.Notes, "a claimed file or function does not exist at the resolved commit")
+		v.Notes = append(v.Notes, "a claimed file, function or package does not exist at the resolved commit")
 	case res.DedupeRan && res.DedupeExactMatch && !res.ResolvedViaFallback:
 		v.Outcome = report.OutcomeLikelyDuplicate
 		v.Notes = append(v.Notes, "an exact claim match was found against a prior report")
@@ -113,7 +113,7 @@ func Compose(r report.Report, res StageResults) report.Verdict {
 // another package) comes back unknown and never reaches this check.
 func hardClaimFailed(claims []report.Claim) bool {
 	for _, c := range claims {
-		if (c.Kind == report.ClaimFile || c.Kind == report.ClaimFunction) && c.Verified == report.TriNo {
+		if (c.Kind == report.ClaimFile || c.Kind == report.ClaimFunction || c.Kind == report.ClaimPackage) && c.Verified == report.TriNo {
 			return true
 		}
 	}

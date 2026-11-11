@@ -1,0 +1,7 @@
+{
+  "repo": "coredns/coredns",
+  "ref": "232d7cac38fbb8baeb900150d683e61da288ae75",
+  "expected_outcome": "NEEDS_INFO",
+  "source": "GHSA-9pmm-cxww-rrr7",
+  "notes": "Real advisory, written in our own words. It keeps what made the published text hard: it tells the maintainer to save a new test file in an existing directory (plugin/rewrite/pvr_edns0_panic_test.go) and then quotes that file name in the output. The file does not exist in the repository and is not supposed to. Regression case: on 2026-11-11 that path was marked as a missing file. ref is tag v1.14.4, the last affected release; plugin/rewrite/edns0.go and (*edns0SetResponseRule).RewriteResponse (edns0.go:47) exist there. The test body in report.md is a stub, not the reporter's PoC, so there is no runnable PoC and the verdict a finished tool should give is NEEDS_INFO; until the sandbox exists it is INCONCLUSIVE."
+}

@@ -545,3 +545,86 @@ func TestGroundBareFileNameIsNeverDisproved(t *testing.T) {
 		t.Fatal("a bare file name from another project rejected the report")
 	}
 }
+
+// A report that names a package by its full import path, under this
+// module's own path, has said exactly where in this repository the
+// package is. If no such directory exists, that is proof (fab-013,
+// fab-014). Everything short of that stays unknown.
+func TestGroundPackageClaims(t *testing.T) {
+	grounded := groundValues(t, disproveFixture, report.ClaimPackage, []string{
+		"example.com/widgets",               // the module root
+		"example.com/widgets/http2",         // a real package
+		"example.com/widgets/internal/http", // a real nested package
+		"example.com/widgets/httpmetrics",   // invented, under this module
+		"example.com/widgets/http2/hpackx",  // invented, under a real directory
+		"example.com/widgets/HTTP2",         // differs only by case: not proof
+		"example.com/widgets/v2/http2",      // another major version, perhaps on another branch
+		"example.com/widgetsextra/http2",    // a different module that shares a prefix string
+		"google.golang.org/protobuf/proto",  // a dependency
+		"example.com/widgets/../../etc",     // never a path we look up
+		"example.com/widgets/issues/12",     // a web path, not a package
+	}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"example.com/widgets":               report.TriYes,
+		"example.com/widgets/http2":         report.TriYes,
+		"example.com/widgets/internal/http": report.TriYes,
+		"example.com/widgets/httpmetrics":   report.TriNo,
+		"example.com/widgets/http2/hpackx":  report.TriNo,
+		"example.com/widgets/HTTP2":         report.TriUnknown,
+		"example.com/widgets/v2/http2":      report.TriUnknown,
+		"example.com/widgetsextra/http2":    report.TriUnknown,
+		"google.golang.org/protobuf/proto":  report.TriUnknown,
+		"example.com/widgets/../../etc":     report.TriUnknown,
+		"example.com/widgets/issues/12":     report.TriUnknown,
+	})
+	for _, c := range grounded {
+		if c.Value == "example.com/widgets/httpmetrics" && !strings.Contains(c.Evidence, "closest") {
+			t.Errorf("evidence = %q, want the closest real package", c.Evidence)
+		}
+	}
+	v := verdict.Compose(report.Report{ID: "R1", ClaimedRef: "v1"},
+		verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: true})
+	if v.Outcome != report.OutcomeGroundingFailed {
+		t.Fatalf("outcome = %s, want GROUNDING_FAILED for an invented package of this module", v.Outcome)
+	}
+}
+
+// With no go.mod there is no module path to tie an import path to
+// this repository, and with an incomplete scan a directory that looks
+// absent may simply not have been seen.
+func TestGroundPackageClaimNeedsModuleAndFullScan(t *testing.T) {
+	noMod := map[string]string{"a/a.go": "package a\n"}
+	grounded := groundValues(t, noMod, report.ClaimPackage, []string{"example.com/widgets/nope"}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{"example.com/widgets/nope": report.TriUnknown})
+
+	old := maxGoFiles
+	maxGoFiles = 1
+	defer func() { maxGoFiles = old }()
+	grounded = groundValues(t, disproveFixture, report.ClaimPackage, []string{"example.com/widgets/httpmetrics"}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{"example.com/widgets/httpmetrics": report.TriUnknown})
+}
+
+// Shapes from published advisories that were once marked as missing
+// files: a path prefixed with the repository's name, and test files
+// the report asks the maintainer to create or that arrived with the
+// fix. An invented source file in a real directory is still caught.
+func TestGroundFileClaimsFromRealAdvisories(t *testing.T) {
+	grounded := groundValues(t, disproveFixture, report.ClaimFile, []string{
+		"widgets/http2/frame.go", // repository name in front
+		"src/github.com/x/widgets/util/limit.go",
+		"widgets/frame.go",              // name in front of a path that is itself partial
+		"http2/poc_overread_test.go",    // a PoC to save next to the code
+		"util/limit_regression_test.go", // added with the fix
+		"http2/forwarded_host.go",       // invented, not a test: still proof
+		"widgets/http2/invented.go",     // invented, with the name in front
+	}, nil)
+	checkVerified(t, grounded, map[string]report.Tri{
+		"widgets/http2/frame.go":                 report.TriUnknown,
+		"src/github.com/x/widgets/util/limit.go": report.TriUnknown,
+		"widgets/frame.go":                       report.TriUnknown,
+		"http2/poc_overread_test.go":             report.TriUnknown,
+		"util/limit_regression_test.go":          report.TriUnknown,
+		"http2/forwarded_host.go":                report.TriNo,
+		"widgets/http2/invented.go":              report.TriUnknown, // no directory widgets/http2: may be elsewhere
+	})
+}

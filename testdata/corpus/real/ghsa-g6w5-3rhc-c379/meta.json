@@ -1,0 +1,7 @@
+{
+  "repo": "gomarkdown/markdown",
+  "ref": "d0b5ea06ca81b481a9cab073610fd15323571dab",
+  "expected_outcome": "NEEDS_INFO",
+  "source": "GHSA-g6w5-3rhc-c379",
+  "notes": "Real advisory, written in our own words. It keeps the one thing that made the published text hard: it explains a regression by citing a file in the upstream project, blackfriday v2 (`html.go:927`). There is no html.go in this repository. Regression case: on 2026-11-11 that mention was marked as a missing file, which is enough for GROUNDING_FAILED on a genuine report. ref is the commit the reporter tested (on master). parser/block.go and html/renderer.go exist at the ref. No PoC is attached, so the verdict a finished tool should give is NEEDS_INFO; until the sandbox exists it is INCONCLUSIVE."
+}

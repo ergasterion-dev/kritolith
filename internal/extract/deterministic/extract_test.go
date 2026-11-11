@@ -355,3 +355,45 @@ func TestExtractIgnoresFilesAndFunctionsInsideLinks(t *testing.T) {
 		t.Errorf("version claims = %v, missing the commit named in the link", versions)
 	}
 }
+
+func TestExtractPackageClaims(t *testing.T) {
+	body := "`InstrumentHandlerCounter` in the\n`github.com/prometheus/client_golang/prometheus/httpmetrics` package increments a counter.\n" +
+		"The package `golang.org/x/net/http2` is fine, as are the `gopkg.in/yaml.v3` Packages. " +
+		"A consumer does import \"github.com/gorilla/mux/middleware\" and calls it.\n" +
+		// None of these is called a package:
+		"See github.com/gorilla/mux/issues/12 and `github.com/gorilla/mux/pull/7`, " +
+		"the package manager, package `main`, and the `net/http` package.\n"
+	var got []string
+	for _, c := range Extract(body) {
+		if c.Kind == report.ClaimPackage {
+			got = append(got, c.Value)
+		}
+	}
+	want := []string{
+		"github.com/prometheus/client_golang/prometheus/httpmetrics",
+		"gopkg.in/yaml.v3",
+		"golang.org/x/net/http2",
+		"github.com/gorilla/mux/middleware",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("package claims = %v, want %v", got, want)
+	}
+}
+
+// A relative markdown link target is a path on the code host, often
+// prefixed with the repository's name. Only the link text is a claim.
+func TestExtractIgnoresRelativeLinkTargets(t *testing.T) {
+	body := "- [`admin.go`](/caddy/admin.go#L719): `strings.HasPrefix(r.URL.Path, allowedPath)`\n" +
+		"- see [the handler](../blob/main/server/handler.go) and [docs](docs/usage.md)\n" +
+		"- plain mention of modules/caddyhttp/app.go (not a link) stays\n" +
+		"- an array index like a[i](x) is left alone: util.go\n"
+	var files []string
+	for _, c := range Extract(body) {
+		if c.Kind == report.ClaimFile {
+			files = append(files, c.Value)
+		}
+	}
+	if got, want := strings.Join(files, " "), "admin.go modules/caddyhttp/app.go util.go"; got != want {
+		t.Errorf("file claims = %q, want %q", got, want)
+	}
+}

@@ -1,0 +1,7 @@
+{
+  "repo": "golang-jwt/jwt",
+  "ref": "80dccb9209ebe7b503c067dc830fcbd4aa2e74eb",
+  "expected_outcome": "NEEDS_INFO",
+  "source": "GHSA-mh63-6h87-95cp",
+  "notes": "Real advisory (CVE-2025-30204), written in our own words but keeping the link shapes of the published text: a markdown link to a blob at a commit, a pkg.go.dev link, a cwe.mitre.org link, and pkg.go.dev written without a scheme. ref is tag v5.2.1, the last affected release. Regression case: on 2026-11-11 the published text was marked GROUNDING_FAILED because 'pkg.go' was read out of the pkg.go.dev host name as a claimed file. No PoC is attached, so the verdict a finished tool should give is NEEDS_INFO; until the sandbox exists it is INCONCLUSIVE. parser.go and (*Parser).ParseUnverified checked at the ref (parser.go:138)."
+}
