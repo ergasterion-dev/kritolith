@@ -89,6 +89,13 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(stderr, err)
 		}
 	}
+	return runReport(ctx, r, cfg, dir, *asJSON, stdout, stderr)
+}
+
+// runReport sends one report through the pipeline and prints its
+// verdict. Every intake command ends here, so a report is handled the
+// same way however it arrived.
+func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir string, asJSON bool, stdout, stderr io.Writer) int {
 	st, err := store.Open(ctx, dir)
 	if err != nil {
 		return fail(stderr, err)
@@ -111,7 +118,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(stderr, err)
 	}
-	if *asJSON {
+	if asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(v); err != nil {

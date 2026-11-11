@@ -44,6 +44,15 @@ Found a hole in any of this? Please report it privately: see [SECURITY.md](../SE
 - The advisory's summary, description and "affected" fields are all written by the reporter. They are laid out as report text and go through the same extraction as a file. Each structured field is collapsed to one line, so a package name cannot start a new heading or list item.
 - Nothing is written back to GitHub.
 
+### Intake from email (`kritolith ingest --eml`)
+
+- One message, at most 16 MiB raw, parsed with `net/mail` and `mime/multipart`. At most 200 MIME parts, nested at most 8 deep.
+- The report text is the plain-text parts, at most 1 MiB; a message over that is refused, not truncated. HTML is used only when there is no plain text, with tags, comments, `script` and `style` removed. That is a reader for text, not a sanitizer: the result is never rendered as HTML.
+- Attachments are kept as PoC files, at most 64 files and 8 MiB decoded, and are never executed. An attachment's name is reduced to its last path element with leading dots removed, so `../../.ssh/authorized_keys` is stored as `authorized_keys`; clashing names get a numeric prefix.
+- The message cannot choose the repository. `--repo` comes from the operator, or from a config that names exactly one project.
+- The subject and Message-ID pass through `Printable` and are cut to a fixed length. The sender's address is not stored.
+- Mail headers are not authenticated. Kritolith does not check SPF, DKIM or who sent a message, and nothing it does depends on the sender.
+
 ### Extract
 
 - The deterministic extractor is regular expressions over the report text (Go's `regexp`, which runs in linear time). Fenced code blocks are removed first, so code in a PoC is not read as a claim. Links are removed before files and functions are read, so `pkg.go.dev` is not a file called `pkg.go`. Output is capped at 50 claims per kind.
@@ -138,6 +147,8 @@ Each target checks a property, not only "does not crash".
 | `ground.FuzzValidateClaimPath` | Accepted paths stay inside the tree |
 | `ground.FuzzReadBatch` | Arbitrary `git cat-file --batch` output is answered in order, within the size cap, with an error if any path goes unanswered |
 | `file.FuzzTitle` | The title is one printable line of bounded length |
+| `eml.FuzzLoad` | Any bytes as a message give a bounded, valid-UTF-8 body and safe, distinct attachment names within the size caps |
+| `github.FuzzBody` | Advisory fields cannot add lines of their own to the report text |
 
 Run one with:
 

@@ -75,7 +75,7 @@ flowchart LR
 | **Sandbox** | Builds and runs the PoC under [gVisor](https://gvisor.dev) with no network, hard CPU/memory/PID limits, and a control run at `HEAD`. |
 | **Verdict** | Writes a short, factual verdict plus an evidence bundle signed with ed25519, so anyone can check it wasn't altered. |
 
-**Built today:** intake from a local file or one GitHub advisory at a time, extract, ground, dedupe. **Not built yet:** the webhook server that picks up GitHub private reports as they arrive, `.eml` intake, the sandbox, and signing. See [Roadmap](#roadmap).
+**Built today:** intake from a local file, a raw email message, or one GitHub advisory at a time; extract, ground, dedupe. **Not built yet:** the webhook server that picks up GitHub private reports as they arrive, the sandbox, and signing. See [Roadmap](#roadmap).
 
 ## Verdicts
 
@@ -114,11 +114,11 @@ Security reports describe unfixed vulnerabilities, so Kritolith is **local-first
 |---|---|---|
 | `kritolith check --repo owner/name [--ref sha] [--poc dir] [--json] report.md` | works | Verify one report file. |
 | `kritolith check --repo owner/name [--ref sha] --ghsa GHSA-xxxx-xxxx-xxxx` | works | Verify a report filed through GitHub private vulnerability reporting, fetched with your own token. |
+| `kritolith ingest --eml --repo owner/name [--ref sha] < message.eml` | works | Verify a report from a raw email message. Attachments are kept as PoC files. |
 | `kritolith osv sync` | works | Build or refresh the local mirror of the OSV Go advisories used for duplicate detection. |
 | `kritolith eval [--corpus dir] [--case id]` | works | Run the eval corpus, or chosen cases, and print the scoreboard. |
 | `kritolith version` | works | Print the version. |
 | `kritolith serve` | not built | Webhook server and workers for GitHub private vulnerability reports. |
-| `kritolith ingest --eml` | not built | Read a report from a raw email message. |
 | `kritolith keygen`, `kritolith verify-bundle` | not built | Create the ed25519 signing key; verify a signed evidence bundle. |
 
 ### Reports from GitHub private vulnerability reporting
@@ -134,6 +134,14 @@ kritolith check --repo owner/name --ghsa GHSA-xxxx-xxxx-xxxx --ref v1.4.2
 - Kritolith makes one `GET` to `api.github.com` (or `--github-api-url` for GitHub Enterprise Server), refuses redirects, and stores the report in the local data directory like any other. Nothing is written back to GitHub.
 - An advisory names versions, not a commit. Pass `--ref` if you know the affected tag or commit. Without it the verdict is `NEEDS_INFO`, with the claims still checked against any affected release named on the advisory.
 - This has been tested against published advisories. It has not yet been run against a report still in `triage`; GitHub documents the same endpoint for both.
+
+### Reports that arrive by email
+
+```sh
+kritolith ingest --eml --repo owner/name < message.eml
+```
+
+Works with anything that can hand over a raw message: fetchmail, procmail, a Postfix pipe, or "Show original" saved from a mail client. The report text is the plain-text body (or the HTML body with its markup removed), the subject becomes the title, and attachments are stored as PoC files without being run. The sender's address is not stored. With `--config` naming exactly one project, `--repo` can be left out.
 
 An LLM is optional and off by default. To use one for claim extraction and embeddings, copy [`kritolith.example.json`](kritolith.example.json) and pass it with `--config`.
 
@@ -158,7 +166,8 @@ Version 1 deliberately stays narrow.
 - [x] Grounding against git and the Go AST
 - [x] Deduplication with embeddings and a local OSV mirror
 - [ ] gVisor sandbox with hostile-PoC hardening
-- [ ] Signed verdicts, email delivery, `.eml` intake
+- [x] Intake from email (`ingest --eml`) and from a GitHub security advisory (`check --ghsa`)
+- [ ] Signed verdicts, email delivery, webhook server
 - [x] Public threat model ([docs/threat-model.md](docs/threat-model.md)) and fuzz tests for every parser of hostile input
 - [ ] Install docs, first release
 

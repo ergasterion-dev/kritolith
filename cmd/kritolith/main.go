@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
@@ -19,6 +20,7 @@ const usage = `Usage: kritolith <command> [flags]
 
 Commands:
   check     verify a single report: a file, or a GitHub advisory with --ghsa
+  ingest    verify a report from a raw email message (--eml)
   eval      run the eval corpus and print the scoreboard
   osv       manage the local OSV mirror (run "kritolith osv sync -h")
   version   print the version
@@ -28,7 +30,7 @@ Run "kritolith <command> -h" for command flags.
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := runIO(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
@@ -36,6 +38,12 @@ func main() {
 // run executes one CLI invocation and returns the process exit code:
 // 0 success, 1 runtime failure, 2 usage error.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return runIO(ctx, args, strings.NewReader(""), stdout, stderr)
+}
+
+// runIO is run with standard input, for the commands that read a
+// report from it.
+func runIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -43,6 +51,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "check":
 		return runCheck(ctx, args[1:], stdout, stderr)
+	case "ingest":
+		return runIngest(ctx, args[1:], stdin, stdout, stderr)
 	case "eval":
 		return runEval(ctx, args[1:], stdout, stderr)
 	case "osv":
