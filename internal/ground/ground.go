@@ -177,13 +177,12 @@ func (l *lazyIndex) get() *symbolIndex {
 			idx.dirs[d] = true
 		}
 	}
-	for _, f := range files {
-		content, ok, err := l.m.ReadFile(l.ctx, l.commit, f)
-		if err != nil || !ok {
+	err = l.m.ReadFiles(l.ctx, l.commit, files, func(f string, content []byte, ok bool) {
+		if !ok {
 			if idx.incomplete == "" {
 				idx.incomplete = fmt.Sprintf("could not read %s", report.Printable(f))
 			}
-			continue
+			return
 		}
 		fs := parseDeclarations(f, content)
 		if fs.pkg == "" {
@@ -206,6 +205,11 @@ func (l *lazyIndex) get() *symbolIndex {
 			idx.types[t.name] = t
 		}
 		scanIdentifiers(content, idx.idents)
+	})
+	if err != nil && idx.incomplete == "" {
+		// Some files were never read, so a symbol that looks absent
+		// may simply not have been scanned.
+		idx.incomplete = "could not read all of the repository's Go files"
 	}
 	return idx
 }

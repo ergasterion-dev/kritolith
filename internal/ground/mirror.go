@@ -1,10 +1,12 @@
 package ground
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -320,6 +322,132 @@ func (m *Mirror) ReadFile(ctx context.Context, commit, path string) ([]byte, boo
 		return nil, false, nil
 	}
 	return []byte(out), true, nil
+}
+
+// ReadFiles reads many blobs at commit with a single
+// `git cat-file --batch` process, and calls fn once per path, in the
+// order given. ok is false wherever ReadFile's would be: the path is
+// invalid or missing, or the blob is larger than maxReadBytes. It is
+// also false for anything that isn't a blob (a directory, a
+// submodule). An oversized blob is discarded as it streams, never
+// buffered.
+//
+// Indexing a repository reads every Go file in it. Doing that through
+// ReadFile costs two git processes per file, which dominates the run
+// time on a repository with hundreds of files.
+//
+// A non-nil error means git failed or answered with something
+// unexpected partway through; fn was not called for the paths after
+// that point, so the caller must treat its view as incomplete.
+func (m *Mirror) ReadFiles(ctx context.Context, commit string, paths []string, fn func(path string, content []byte, ok bool)) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	commitOK := !strings.ContainsAny(commit, "\n\r")
+	askable := make([]bool, len(paths))
+	var stdin bytes.Buffer
+	for i, p := range paths {
+		// cat-file reads one object name per line, so a path with a
+		// line break can't be asked about. ListGoFiles can return one:
+		// git allows it in a file name.
+		if !commitOK || ValidateClaimPath(p) != nil || strings.ContainsAny(p, "\n\r") {
+			continue
+		}
+		askable[i] = true
+		stdin.WriteString(commit + ":" + p + "\n")
+	}
+	if stdin.Len() == 0 {
+		for _, p := range paths {
+			fn(p, nil, false)
+		}
+		return nil
+	}
+
+	cmd := gitCommand(ctx, m.path, "cat-file", "--batch")
+	cmd.Stdin = &stdin
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("ground: read files at %s: %w", commit, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("ground: read files at %s: %w", commit, err)
+	}
+	readErr := readBatch(bufio.NewReaderSize(stdout, 64<<10), paths, askable, fn)
+	if readErr != nil {
+		// Stop git instead of waiting for it to finish writing output
+		// nobody will read.
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return fmt.Errorf("ground: read files at %s: %w", commit, readErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("ground: read files at %s: %w: %s", commit, waitErr, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
+}
+
+// readBatch parses `git cat-file --batch` output for the askable
+// paths: a "<object id> <type> <size>" line followed by size bytes
+// and a newline, or "<name> missing".
+func readBatch(r *bufio.Reader, paths []string, askable []bool, fn func(path string, content []byte, ok bool)) error {
+	for i, p := range paths {
+		if !askable[i] {
+			fn(p, nil, false)
+			continue
+		}
+		header, err := r.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("reading the answer for %s: %w", report.Printable(p), err)
+		}
+		header = strings.TrimSuffix(header, "\n")
+		f := strings.Fields(header)
+		if len(f) != 3 || !isObjectID(f[0]) {
+			if strings.HasSuffix(header, " missing") {
+				fn(p, nil, false)
+				continue
+			}
+			return fmt.Errorf("unexpected cat-file answer for %s", report.Printable(p))
+		}
+		size, err := strconv.ParseInt(f[2], 10, 64)
+		if err != nil || size < 0 {
+			return fmt.Errorf("unexpected object size for %s", report.Printable(p))
+		}
+		if f[1] != "blob" || size > maxReadBytes {
+			// The content and its trailing newline still have to be
+			// consumed to reach the next header.
+			if _, err := io.CopyN(io.Discard, r, size+1); err != nil {
+				return fmt.Errorf("skipping %s: %w", report.Printable(p), err)
+			}
+			fn(p, nil, false)
+			continue
+		}
+		content := make([]byte, size)
+		if _, err := io.ReadFull(r, content); err != nil {
+			return fmt.Errorf("reading %s: %w", report.Printable(p), err)
+		}
+		if _, err := r.Discard(1); err != nil {
+			return fmt.Errorf("reading %s: %w", report.Printable(p), err)
+		}
+		fn(p, content, true)
+	}
+	return nil
+}
+
+// isObjectID reports whether s is a full SHA-1 or SHA-256 object name.
+func isObjectID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ListGoFiles returns every ".go" file path at commit, via one

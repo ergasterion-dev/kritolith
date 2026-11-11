@@ -2,6 +2,7 @@ package ground
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -439,5 +440,156 @@ func TestCloneTimeoutLeavesNoPartialMirror(t *testing.T) {
 	networkTimeout = old
 	if sha, resolved, _, err := m.EnsureAndResolve(context.Background(), commit, nil); err != nil || !resolved || sha != commit {
 		t.Fatalf("retry after failed clone = %q, %v, %v, want %q", sha, resolved, err, commit)
+	}
+}
+
+func TestReadFilesMatchesReadFile(t *testing.T) {
+	origin, _ := newTestOrigin(t)
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = origin
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	files := map[string]string{
+		"b.go":            "package a\n\nfunc Bar() {}\n",
+		"empty.go":        "",
+		"no_newline.go":   "package a",
+		"sub/dir/c.go":    "package c\n\nfunc Baz() {}\n",
+		"with space.go":   "package a\n",
+		"big.go":          strings.Repeat("x", 1000),
+		"binary.go":       "package a\x00\n\xff\xfe\n",
+		"looks missing":   "x\n",
+		"trailing/nl.go":  "package a\n\n\n",
+		"sub/dir/also.go": "package c\n",
+	}
+	for name, content := range files {
+		p := filepath.Join(origin, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "more files")
+	commit := run("rev-parse", "HEAD")
+
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	old := maxReadBytes
+	maxReadBytes = 500 // big.go is over the cap, everything else under
+	t.Cleanup(func() { maxReadBytes = old })
+
+	paths := []string{
+		"a.go", "b.go", "missing.go", "empty.go", "no_newline.go", "big.go",
+		"sub/dir/c.go", "with space.go", "binary.go", "looks missing",
+		"../escape.go", "bad\npath.go", "trailing/nl.go", "sub/dir/also.go", "a.go",
+	}
+	type result struct {
+		path    string
+		content string
+		ok      bool
+	}
+	var got []result
+	err = m.ReadFiles(ctx, commit, paths, func(path string, content []byte, ok bool) {
+		got = append(got, result{path, string(content), ok})
+	})
+	if err != nil {
+		t.Fatalf("ReadFiles: %v", err)
+	}
+	if len(got) != len(paths) {
+		t.Fatalf("ReadFiles called back %d times, want %d", len(got), len(paths))
+	}
+	for i, p := range paths {
+		want, wantOK, err := m.ReadFile(ctx, commit, p)
+		if err != nil {
+			t.Fatalf("ReadFile(%q): %v", p, err)
+		}
+		if got[i].path != p {
+			t.Errorf("callback %d is for %q, want %q", i, got[i].path, p)
+		}
+		if got[i].ok != wantOK || got[i].content != string(want) {
+			t.Errorf("ReadFiles(%q) = %q, %v; ReadFile gives %q, %v", p, got[i].content, got[i].ok, want, wantOK)
+		}
+	}
+}
+
+func TestReadFilesRejectsNonBlobs(t *testing.T) {
+	origin, _ := newTestOrigin(t)
+	if err := os.MkdirAll(filepath.Join(origin, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "sub", "c.go"), []byte("package c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "sub"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = origin
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	commit, _, _, err := m.EnsureAndResolve(ctx, "main", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory is not a file: the batch reader must say so and still
+	// read the entries around it correctly.
+	var got []string
+	err = m.ReadFiles(ctx, commit, []string{"a.go", "sub", "sub/c.go"}, func(path string, content []byte, ok bool) {
+		got = append(got, fmt.Sprintf("%s ok=%v %q", path, ok, content))
+	})
+	if err != nil {
+		t.Fatalf("ReadFiles: %v", err)
+	}
+	want := []string{
+		`a.go ok=true "package a\n\nfunc Foo() {}\n"`,
+		`sub ok=false ""`,
+		`sub/c.go ok=true "package c\n"`,
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("ReadFiles = %q, want %q", got, want)
+	}
+}
+
+func TestReadFilesEmptyAndMissingCommit(t *testing.T) {
+	origin, commit := newTestOrigin(t)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	if err := m.ReadFiles(ctx, commit, nil, func(string, []byte, bool) { calls++ }); err != nil || calls != 0 {
+		t.Errorf("ReadFiles(no paths) = %v with %d callbacks, want nil and 0", err, calls)
+	}
+	// A commit that doesn't exist reads as "not ok" for every path, as ReadFile does.
+	missing := strings.Repeat("0", len(commit)-1) + "1"
+	var oks []bool
+	if err := m.ReadFiles(ctx, missing, []string{"a.go"}, func(_ string, _ []byte, ok bool) { oks = append(oks, ok) }); err != nil {
+		t.Fatalf("ReadFiles(missing commit): %v", err)
+	}
+	if len(oks) != 1 || oks[0] {
+		t.Errorf("ReadFiles(missing commit) = %v, want one not-ok callback", oks)
 	}
 }
