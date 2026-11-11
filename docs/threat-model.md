@@ -114,7 +114,7 @@ These are real and not yet fixed.
 - **The git and Go parsers are attack surface.** Kritolith passes repository content to `git` and to `go/parser`. A bug in either is a bug in Kritolith. Keep both up to date.
 - **Git reads the user's own `~/.gitconfig`.** Only the system config is disabled. A credential helper or URL rewrite configured there applies to Kritolith's clones.
 - **Model prompts contain the whole report.** With `allow_cloud: true` the report text goes to that provider. This is the documented meaning of the setting, and it is why it is off by default.
-- **`kritolith osv sync` has no request timeout** and stops at the first malformed entry in the export.
+- **`kritolith osv sync` indexes one Go package per advisory.** An advisory that affects several modules is found only under the first.
 - **Fuzzing is not continuous.** The fuzz targets below run as ordinary tests on their seed inputs in CI. Longer runs are manual.
 
 ## Not built yet, and the rules it must meet
