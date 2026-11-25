@@ -114,10 +114,10 @@ func (p *probe) sh(t *testing.T, script string, mounts ...Mount) RunOutput {
 }
 
 // TestProbeDevContents: /dev holds the four devices of the OCI config
-// and runsc's own links, nothing from the host.
+// and runsc's own links and virtual nodes, nothing from the host.
 func TestProbeDevContents(t *testing.T) {
 	p := newProbe(t, needSandbox(t))
-	out := p.sh(t, "ls -1A /dev; echo ---; ls -la /dev")
+	out := p.sh(t, "ls -1A /dev; echo ---; ls -la /dev; ls -la /dev/char /dev/net")
 	t.Logf("/dev inside the sandbox:\n%s", out.Output)
 	listing, _, _ := strings.Cut(string(out.Output), "---")
 	have := map[string]bool{}
@@ -130,7 +130,10 @@ func TestProbeDevContents(t *testing.T) {
 		}
 	}
 	allowed := map[string]bool{"null": true, "zero": true, "urandom": true, "tty": true,
-		"fd": true, "stdin": true, "stdout": true, "stderr": true, "pts": true, "ptmx": true, "shm": true}
+		"fd": true, "stdin": true, "stdout": true, "stderr": true, "pts": true, "ptmx": true, "shm": true,
+		// Observed on runsc 20261102.0: gVisor's own virtual /dev nodes,
+		// served by its user-space kernel, never host devices.
+		"char": true, "net": true, "full": true, "random": true, "fuse": true}
 	for n := range have {
 		if !allowed[n] {
 			t.Errorf("/dev/%s present: not in the OCI device list (linux.devices) nor a runsc link; check runsc.go's TODO(task10) and BuildOCI", n)
