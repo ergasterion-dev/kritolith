@@ -409,3 +409,16 @@ func TestRaceReportCap(t *testing.T) {
 		t.Fatalf("got %d stacks from %d reports, want %d", len(stacks), maxRaceReports+10, 2*maxRaceReports)
 	}
 }
+
+// Analyze does not know which tests were requested, so a skipped run
+// that exits 0 is "passed" here; the Runner maps it to ReasonSkipped.
+func TestAnalyzeLeavesSkipsToTheRunner(t *testing.T) {
+	out := RunOutput{Output: []byte("=== RUN   TestPoC\n--- SKIP: TestPoC (0.00s)\nPASS\n")}
+	got := Analyze(out, victimFuncs("pkg.Clean"))
+	if got.Kind != KindNone || got.Reason != ReasonPassed {
+		t.Fatalf("Analyze = %+v, want none/passed", got)
+	}
+	if !validReasons[ReasonSkipped] {
+		t.Fatal("ReasonSkipped missing from validReasons")
+	}
+}

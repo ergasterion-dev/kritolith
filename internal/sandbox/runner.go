@@ -87,6 +87,9 @@ func Available(cfg config.Sandbox) error {
 	if err := cfg.Validate(); err != nil {
 		return &Unavailable{Reason: err.Error()}
 	}
+	if err := checkProxy(cfg.GoProxy); err != nil {
+		return &Unavailable{Reason: "sandbox.goproxy: " + err.Error()}
+	}
 	fi, err := os.Stat(cfg.Rootfs)
 	if err != nil || !fi.IsDir() {
 		return &Unavailable{Reason: fmt.Sprintf("the sandbox rootfs %q is not a directory", cfg.Rootfs)}
@@ -185,6 +188,8 @@ func (r *Runner) Run(ctx context.Context, req Request) (res Result) {
 		return Result{Skipped: "no ref resolved, so there is nothing to run the PoC against"}
 	case !filepath.IsAbs(r.scratchRoot) || filepath.Clean(r.scratchRoot) == "/":
 		return Result{Skipped: "the sandbox scratch directory is misconfigured"}
+	case checkProxy(r.cfg.GoProxy) != nil:
+		return Result{Skipped: "the sandbox goproxy is not a single allowed proxy URL"}
 	}
 	p, err := ValidatePoC(req.Report.PoC)
 	if err != nil {

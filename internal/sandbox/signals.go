@@ -32,11 +32,15 @@ const (
 	ReasonTruncated     = "truncated"
 	ReasonNoTestsRan    = "no-tests-ran"
 	ReasonPassed        = "passed"
+	// ReasonSkipped is never returned by Analyze, which cannot tell
+	// which tests were requested: the Runner sets it when a run that
+	// Analyze calls "passed" skipped a requested test (t.Skip exits 0).
+	ReasonSkipped = "skipped"
 )
 
 var validReasons = map[string]bool{
 	"": true, ReasonBuild: true, ReasonTimeout: true, ReasonOOM: true, ReasonNoClaimedCode: true,
-	ReasonExitNoSignal: true, ReasonTruncated: true, ReasonNoTestsRan: true, ReasonPassed: true,
+	ReasonExitNoSignal: true, ReasonTruncated: true, ReasonNoTestsRan: true, ReasonPassed: true, ReasonSkipped: true,
 }
 
 // Work caps: Analyze reads hostile output and must stay cheap.
@@ -236,6 +240,9 @@ func runtimePkgPath(module, dir string) string {
 // panics, reads at most maxScanBytes of output and of coverage, and
 // returns a reproducing Kind only when a frame or coverage block lies in
 // a claimed function or file that is in the module and not in the PoC.
+// It never returns ReasonSkipped: an all-skipped run that exits 0 is
+// ReasonPassed here, and the Runner, which knows the requested test
+// names, turns it into ReasonSkipped.
 func Analyze(out RunOutput, t Targets) Signal {
 	data := out.Output
 	truncated := out.Truncated

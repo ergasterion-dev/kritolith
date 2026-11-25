@@ -647,7 +647,7 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 		if !fi.IsDir() || !fi.ModTime().Before(before) {
 			continue
 		}
-		if err := os.RemoveAll(p); err != nil {
+		if err := removeAllForce(p); err != nil {
 			errs = append(errs, fmt.Errorf("sandbox: sweep: remove %s: %w", p, err))
 		}
 	}

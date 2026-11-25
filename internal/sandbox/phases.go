@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -153,10 +154,10 @@ func newLayout(root string) (layout, error) {
 	return l, nil
 }
 
-func goEnv(proxy, gocache string) []string {
+func goEnv(proxy, goflags, gocache string) []string {
 	return []string{
 		"GOPROXY=" + proxy,
-		"GOFLAGS=-mod=mod",
+		"GOFLAGS=" + goflags,
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
 		"GOENV=off",
@@ -171,10 +172,13 @@ func goEnv(proxy, gocache string) []string {
 
 // fetchEnv is built from scratch: the configured proxy only (no
 // "direct", no list), the checksum database left at its default.
-func fetchEnv(proxy string) []string { return goEnv(proxy, ctrTmp+"/gocache") }
+// -modcacherw keeps the module cache's directories writable so the
+// scratch tree can be removed; it stays a read-only mount in build
+// and run.
+func fetchEnv(proxy string) []string { return goEnv(proxy, "-mod=mod -modcacherw", ctrTmp+"/gocache") }
 
 func buildEnv(race bool) []string {
-	env := goEnv("off", ctrGoCache)
+	env := goEnv("off", "-mod=mod", ctrGoCache)
 	if race {
 		env = append(env, "CGO_ENABLED=1")
 	}
@@ -348,18 +352,6 @@ func (r *Runner) raceAvailable() bool {
 	return r.race
 }
 
-// testsCompleted reports whether test output shows a test result line,
-// so an exit 0 means tests ran to completion.
-func testsCompleted(out []byte) bool {
-	for _, l := range bytes.Split(out, []byte("\n")) {
-		l = bytes.TrimRight(l, "\r")
-		if bytes.Equal(l, []byte("PASS")) || bytes.HasPrefix(bytes.TrimLeft(l, " \t"), []byte("--- PASS: ")) {
-			return true
-		}
-	}
-	return false
-}
-
 // phaseFailure is the Inconclusive reason for a fetch or build that
 // did not finish cleanly.
 func phaseFailure(ctx context.Context, phase string, out RunOutput, err error) string {
@@ -391,7 +383,12 @@ func (r *Runner) attemptAt(ctx context.Context, ref string, p PoC, hint string, 
 	if err != nil {
 		return a.fail("could not create a scratch directory: " + report.Printable(err.Error()))
 	}
-	defer os.RemoveAll(work)
+	defer func() {
+		if err := removeScratch(work); err != nil {
+			slog.Warn("sandbox: scratch directory not fully removed; the next start sweeps it", "dir", work, "error", errnoText(err))
+			a.notes = append(a.notes, "the scratch directory could not be fully removed; it is swept at the next start")
+		}
+	}()
 	l, err := newLayout(work)
 	if err != nil {
 		return a.fail("could not lay out the scratch directory: " + report.Printable(err.Error()))
@@ -515,11 +512,17 @@ func (r *Runner) attemptAt(ctx context.Context, ref string, p PoC, hint string, 
 	switch {
 	case sig.Kind != KindNone:
 		return a
-	case sig.Reason == ReasonPassed && (p.Shape == ShapeProgram || testsCompleted(out.Output)):
-		a.passed = true
-		return a
 	case sig.Reason == ReasonPassed:
-		return a.fail("the run exited 0 but no test result was seen")
+		switch passedAllRequested(p, out.Output) {
+		case "":
+			a.passed = true
+			return a
+		case ReasonSkipped:
+			a.signal = none(ReasonSkipped, "a requested test was skipped")
+			return a.fail("the run exited 0 but a requested test was skipped, which says nothing about the code")
+		}
+		a.signal = none(ReasonNoTestsRan, "a requested test did not pass")
+		return a.fail("the run exited 0 but a requested test did not pass or never ran")
 	case sig.Reason == ReasonNoTestsRan:
 		return a.fail("no test ran (the PoC's tests may be excluded by build constraints or a GOOS/GOARCH file name)")
 	}

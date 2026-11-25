@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -128,5 +129,53 @@ func TestGoModModule(t *testing.T) {
 		if got := goModModule([]byte(in)); got != want {
 			t.Errorf("goModModule(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The testing package renames subtests whose names contain spaces or
+// non-printable characters, and adds "#NN" to duplicates. ValidatePoC
+// limits seed names to [A-Za-z0-9._-] (unique file names), so the
+// subtest name is the seed name itself and the quoted, anchored
+// -test.run component matches exactly that name.
+func TestFuzzSeedNamesNeedNoSubtestRewrite(t *testing.T) {
+	for _, bad := range []string{"a b", "a#01", "a\tb", "a/b", "é"} {
+		if _, err := ValidatePoC([]report.Artifact{{Name: "testdata/fuzz/FuzzX/" + bad}}); err == nil {
+			t.Errorf("seed name %q accepted; the run phase assumes no rewriting", bad)
+		}
+	}
+	seed := "aZ09._-"
+	p, err := ValidatePoC([]report.Artifact{{Name: "testdata/fuzz/FuzzX/" + seed}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := runArgs(p, time.Minute, false)
+	pat := strings.TrimPrefix(args[1], "-test.run=")
+	parts := strings.SplitN(pat, "/", 2)
+	if len(parts) != 2 || !regexp.MustCompile(parts[1]).MatchString(seed) || regexp.MustCompile(parts[1]).MatchString("aZ09x_-") {
+		t.Fatalf("pattern %q does not match exactly the seed %q", pat, seed)
+	}
+}
+
+func TestPassedAllRequested(t *testing.T) {
+	fuzz := PoC{Shape: ShapeFuzz, FuzzName: "FuzzX", Files: []report.Artifact{{Name: "testdata/fuzz/FuzzX/s1"}}}
+	tests := []struct {
+		name, out string
+		p         PoC
+		want      string // "" passed, else reason
+	}{
+		{"test passes", "--- PASS: TestA (0.00s)\nPASS\n", PoC{Shape: ShapeTest, TestNames: []string{"TestA"}}, ""},
+		{"test skips", "--- SKIP: TestA (0.00s)\nPASS\n", PoC{Shape: ShapeTest, TestNames: []string{"TestA"}}, ReasonSkipped},
+		{"indented PASS is a subtest, not the test", "    --- PASS: TestA (0.00s)\nPASS\n", PoC{Shape: ShapeTest, TestNames: []string{"TestA"}}, ReasonNoTestsRan},
+		{"fuzz parent passes", "--- PASS: FuzzX (0.00s)\n    --- PASS: FuzzX/s1 (0.00s)\nPASS\n", fuzz, ""},
+		{"fuzz seed skipped", "--- PASS: FuzzX (0.00s)\n    --- SKIP: FuzzX/s1 (0.00s)\nPASS\n", fuzz, ReasonSkipped},
+		{"fuzz no result", "PASS\n", fuzz, ReasonNoTestsRan},
+		{"program", "", PoC{Shape: ShapeProgram}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := passedAllRequested(tt.p, []byte(tt.out)); got != tt.want {
+				t.Fatalf("passedAllRequested = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
