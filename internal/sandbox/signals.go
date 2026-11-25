@@ -245,10 +245,14 @@ func Analyze(out RunOutput, t Targets) Signal {
 	lines := splitLines(data)
 	m := newMatcher(t)
 
-	if buildFailed(lines) {
+	failed := out.ExitCode != 0
+	// Build text in run-phase output only matters on a failed run: on
+	// exit 0 it is something the PoC printed. The Runner must derive a
+	// "build" outcome from the build phase's own output, never from the
+	// run phase's.
+	if failed && buildFailed(lines) {
 		return none(ReasonBuild, "the PoC did not build")
 	}
-	failed := out.ExitCode != 0
 	var crashSeen, raceSeen, timeoutMsg, oomMsg bool
 	if failed {
 		if h := lastCrash(lines); h >= 0 {
@@ -360,6 +364,9 @@ func buildFailed(lines []string) bool {
 func lastCrash(lines []string) int {
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := lines[i]
+		if len(l) > maxLineBytes {
+			continue
+		}
 		if strings.HasPrefix(l, "panic: ") || strings.HasPrefix(l, "fatal error: ") {
 			return i
 		}
@@ -403,14 +410,15 @@ func crashStack(lines []string, header int) []frame {
 // stacks) of every race report.
 func raceStacks(lines []string) [][]frame {
 	var out [][]frame
-	inRace := false
+	inRace, reports := false, 0
 	for i := 0; i < len(lines); i++ {
 		l := strings.TrimSpace(lines[i])
 		switch {
 		case l == raceStartLine:
-			if len(out) >= maxRaceReports*2 {
+			if reports >= maxRaceReports {
 				return out
 			}
+			reports++
 			inRace = true
 		case l == raceEndLine:
 			inRace = false
@@ -515,7 +523,12 @@ func canonical(sym string) (pkg, name string, ok bool) {
 	rest = strings.NewReplacer("(*", "", "(", "", ")", "").Replace(rest)
 	var toks []string
 	for _, tok := range strings.Split(rest, ".") {
-		if tok == "" || closureTokRe.MatchString(tok) {
+		if tok == "" {
+			// "pkg.glob..func1" (a package-level closure) or a
+			// malformed symbol: not attributable to a declared function.
+			return "", "", false
+		}
+		if closureTokRe.MatchString(tok) {
 			break
 		}
 		if i := strings.Index(tok, "-"); i >= 0 {
@@ -601,14 +614,14 @@ func (m *matcher) isPoC(fr frame) bool {
 // names every main package "main"); a root main package can't be told
 // apart that way and never matches.
 func (m *matcher) claimed(fr frame) bool {
+	if fr.file == "" || outsideTree(fr.file) {
+		return false
+	}
 	pkg, name, ok := canonical(fr.sym)
 	if !ok {
 		return false
 	}
 	if pkg == "main" {
-		if fr.file == "" {
-			return false
-		}
 		fdir := path.Dir(fr.file)
 		for ft := range m.funcs {
 			if ft.name != name || ft.pkg == m.module {
@@ -631,11 +644,22 @@ func (m *matcher) claimed(fr frame) bool {
 	if m.funcs[funcTarget{pkg, name}] {
 		return true
 	}
-	if fr.file == "" {
-		return false
-	}
 	for _, f := range m.files {
 		if pkg == m.pkgForDir(path.Dir(f)) && hasPathSuffix(fr.file, f) {
+			return true
+		}
+	}
+	return false
+}
+
+// outsideTree reports whether a file path points at a copy of the code
+// other than the checked-out tree: the module cache (an element with a
+// version, "pkg@v1.2.3") or a vendor directory. Such a copy is a
+// released version, not the claimed ref, so it never counts, even when
+// its import path is the module's own.
+func outsideTree(p string) bool {
+	for _, e := range strings.Split(p, "/") {
+		if e == "vendor" || strings.Contains(e, "@") {
 			return true
 		}
 	}
@@ -714,7 +738,7 @@ func (m *matcher) coverageHit(profile []byte) string {
 			continue
 		}
 		rel, ok := strings.CutPrefix(mm[1], m.module+"/")
-		if !ok || path.Clean(rel) != rel || !validPkgDir(path.Dir(rel)) {
+		if !ok || outsideTree(mm[1]) || path.Clean(rel) != rel || !validPkgDir(path.Dir(rel)) {
 			continue
 		}
 		if m.isPoC(frame{file: rel}) {

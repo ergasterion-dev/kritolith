@@ -346,3 +346,66 @@ func FuzzAnalyze(f *testing.F) {
 		}
 	})
 }
+
+// Review round 1: frames and coverage from outside the checked-out tree
+// (module cache, vendor), frames without a file, build text on a run
+// that exited 0, glob closures, and the documented caps.
+func TestAnalyzeReviewFixes(t *testing.T) {
+	stack := func(sym, file string) []byte {
+		s := "panic: boom\n\ngoroutine 1 [running]:\n" + sym + "(...)\n"
+		if file != "" {
+			s += "\t" + file + "\n"
+		}
+		return []byte(s + "example.com/a/b/pkg.TestPoC(0x0?)\n\t/work/src/pkg/poc_test.go:5 +0x1\n")
+	}
+	abTargets := func(funcs []string, files []string) Targets {
+		return Targets{Module: "example.com/a/b", Funcs: funcs, Files: files, PoCFiles: []string{"pkg/poc_test.go"}}
+	}
+	claimedF := abTargets([]string{"example.com/a/b/pkg.F"}, nil)
+	claimedFile := abTargets(nil, []string{"pkg/x.go"})
+	tests := []struct {
+		name    string
+		out     RunOutput
+		targets Targets
+		kind    string
+		reason  string
+	}{
+		{"in-tree frame still matches", RunOutput{ExitCode: 2, Output: stack("example.com/a/b/pkg.F", "/work/src/pkg/x.go:3")}, claimedF, KindPanic, ""},
+		{"module cache frame never matches", RunOutput{ExitCode: 2, Output: stack("example.com/a/b/pkg.F", "/root/go/pkg/mod/example.com/a/b/pkg@v1.0.0/x.go:3")}, claimedF, KindNone, ReasonNoClaimedCode},
+		{"module cache frame never matches a file claim", RunOutput{ExitCode: 2, Output: stack("example.com/a/b/pkg.F", "/root/go/pkg/mod/example.com/a/b@v1.0.0/pkg/x.go:3")}, claimedFile, KindNone, ReasonNoClaimedCode},
+		{"vendored frame never matches", RunOutput{ExitCode: 2, Output: stack("example.com/a/b/pkg.F", "/work/src/sub/vendor/example.com/a/b/pkg/x.go:3")}, claimedF, KindNone, ReasonNoClaimedCode},
+		{"frame without a file never matches", RunOutput{ExitCode: 2, Output: stack("example.com/a/b/pkg.F", "")}, claimedF, KindNone, ReasonNoClaimedCode},
+		{"glob closure never matches a func named glob", RunOutput{ExitCode: 2, Output: stack("example.com/a/b/pkg.glob..func1", "/work/src/pkg/x.go:3")}, abTargets([]string{"example.com/a/b/pkg.glob"}, nil), KindNone, ReasonNoClaimedCode},
+		{"build text on a run that exited 0", RunOutput{ExitCode: 0, Output: []byte("# x\nx.go:1:2: undefined: y\nFAIL\tx [build failed]\nok  \tx\t0.1s\n")}, claimedF, KindNone, ReasonPassed},
+		{"in-tree coverage still counts", RunOutput{ExitCode: 1, Output: []byte("--- FAIL: TestPoC (0.00s)\nFAIL\n"), Coverage: []byte("mode: set\nexample.com/a/b/pkg/x.go:3.1,4.2 1 1\n")}, claimedFile, KindFailingTest, ""},
+		{"module cache coverage never counts", RunOutput{ExitCode: 1, Output: []byte("--- FAIL: TestPoC (0.00s)\nFAIL\n"), Coverage: []byte("mode: set\nexample.com/a/b/pkg@v1.0.0/x.go:3.1,4.2 1 1\nexample.com/a/b/vendor/example.com/a/b/pkg/x.go:3.1,4.2 1 1\n")}, abTargets(nil, []string{"pkg/x.go", "pkg@v1.0.0/x.go", "vendor/example.com/a/b/pkg/x.go"}), KindNone, ReasonExitNoSignal},
+		{"oversized crash header is not a header", RunOutput{ExitCode: 2, Output: []byte("panic: " + strings.Repeat("x", 5000) + "\n\ngoroutine 1 [running]:\nexample.com/a/b/pkg.F(...)\n\t/work/src/pkg/x.go:3\n")}, claimedF, KindNone, ReasonExitNoSignal},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Analyze(tc.out, tc.targets)
+			if got.Kind != tc.kind || got.Reason != tc.reason {
+				t.Fatalf("Analyze = %+v, want kind %q reason %q", got, tc.kind, tc.reason)
+			}
+		})
+	}
+}
+
+func TestCanonicalRejectsEmptyToken(t *testing.T) {
+	for _, sym := range []string{"example.com/a/pkg.glob..func1", "pkg..F", "pkg.F."} {
+		if p, n, ok := canonical(sym); ok {
+			t.Errorf("canonical(%q) = %q, %q, ok", sym, p, n)
+		}
+	}
+	if _, n, ok := canonical("example.com/a/pkg.F.func1.2"); !ok || n != "F" {
+		t.Errorf("closure: got %q %v", n, ok)
+	}
+}
+
+func TestRaceReportCap(t *testing.T) {
+	one := "==================\nWARNING: DATA RACE\nRead at 0x01 by goroutine 1:\n  example.com/a/b/pkg.Other()\n      /work/src/pkg/x.go:9 +0x1\n\nPrevious write at 0x01 by goroutine 2:\n  example.com/a/b/pkg.Other()\n      /work/src/pkg/x.go:9 +0x1\n==================\n"
+	stacks := raceStacks(splitLines([]byte(strings.Repeat(one, maxRaceReports+10))))
+	if len(stacks) != 2*maxRaceReports {
+		t.Fatalf("got %d stacks from %d reports, want %d", len(stacks), maxRaceReports+10, 2*maxRaceReports)
+	}
+}
