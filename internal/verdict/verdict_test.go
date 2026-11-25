@@ -336,6 +336,19 @@ func TestComposePrecedence(t *testing.T) {
 			s.SandboxRan = true
 			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "unavailable"), Weak: true}
 		}), report.OutcomeInconclusive, "assertion-only failure counts only", false},
+		{"3b weak by signal alone, control still reproduces", sha, with(func(s *StageResults) {
+			s.SandboxRan = true
+			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "still_reproduces")}
+		}), report.OutcomeInconclusive, "the PoC also fails at HEAD", false},
+		{"3b weak by signal alone, control unavailable", sha, with(func(s *StageResults) {
+			s.SandboxRan = true
+			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "unavailable")}
+		}), report.OutcomeInconclusive, "assertion-only failure counts only", false},
+		{"3b weak, control still reproduces, exact duplicate", sha, with(func(s *StageResults) {
+			dup(s)
+			s.SandboxRan = true
+			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "still_reproduces"), Weak: true}
+		}), report.OutcomeLikelyDuplicate, "the PoC also fails at HEAD", true},
 		{"3b strong, control unavailable", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
 			s.Sandbox = SandboxOutcome{Repro: repro("panic-in-claimed-code", "unavailable")}
@@ -368,6 +381,14 @@ func TestComposePrecedence(t *testing.T) {
 			s.SandboxRan = true
 			s.Sandbox = SandboxOutcome{Repro: clean, Passed: true, ViaFallback: true}
 		}), report.OutcomeInconclusive, "ran clean against a fallback version, not the claimed commit", false},
+		{"3c clean run at another ref is not NOT_REPRODUCED", sha, with(func(s *StageResults) {
+			s.SandboxRan = true
+			s.Sandbox = SandboxOutcome{Repro: &report.ReproResult{Ref: "0123456789abcdef0123456789abcdef01234567"}, Passed: true}
+		}), report.OutcomeInconclusive, "not the commit grounding resolved", false},
+		{"3c clean run with no ref is not NOT_REPRODUCED", sha, with(func(s *StageResults) {
+			s.SandboxRan = true
+			s.Sandbox = SandboxOutcome{Repro: &report.ReproResult{}, Passed: true}
+		}), report.OutcomeInconclusive, "not the commit grounding resolved", false},
 		{"3c passed without evidence is not NOT_REPRODUCED", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
 			s.Sandbox = SandboxOutcome{Passed: true}
@@ -391,6 +412,7 @@ func TestComposePrecedence(t *testing.T) {
 		{"4 no PoC, hard failure beats duplicate", sha, with(func(s *StageResults) { s.HasPoC = false; s.Claims = missing; dup(s) }), report.OutcomeGroundingFailed, "", true},
 		{"4 no PoC, duplicate via fallback is a lead", sha, with(func(s *StageResults) { s.HasPoC = false; s.ResolvedViaFallback = true; dup(s) }), report.OutcomeNeedsInfo, "recorded as a lead", true},
 		{"4 PoC, no sandbox", sha, grounded, report.OutcomeInconclusive, "PoC not run: sandbox not configured", false},
+		{"4 PoC, sandbox configured but not run", sha, with(func(s *StageResults) { s.SandboxConfigured = true }), report.OutcomeInconclusive, "PoC not run: the sandbox stage did not run", false},
 		{"4 PoC, no sandbox, exact duplicate", sha, with(dup), report.OutcomeLikelyDuplicate, "", true},
 		{"4 no grounder, no PoC", sha, StageResults{}, report.OutcomeNeedsInfo, "no runnable PoC attached", false},
 	}
@@ -410,8 +432,17 @@ func TestComposePrecedence(t *testing.T) {
 			if tt.dupsKept && len(v.Duplicates) != 1 {
 				t.Errorf("Duplicates = %+v, want the match still listed", v.Duplicates)
 			}
-			if v.Repro != tt.res.Sandbox.Repro {
+			// Repro is evidence only for outcomes reached from a run:
+			// never when the stage did not run or was skipped, and never
+			// on GROUNDING_FAILED or NEEDS_INFO.
+			sb := tt.res.Sandbox
+			wantRepro := tt.res.SandboxRan && sb.Skipped == "" && sb.Repro != nil &&
+				v.Outcome != report.OutcomeGroundingFailed && v.Outcome != report.OutcomeNeedsInfo
+			if wantRepro && v.Repro != sb.Repro {
 				t.Errorf("Repro = %+v, want the sandbox evidence carried through", v.Repro)
+			}
+			if !wantRepro && v.Repro != nil {
+				t.Errorf("Repro = %+v, want nil", v.Repro)
 			}
 		})
 	}
@@ -465,5 +496,68 @@ func TestRenderRepro(t *testing.T) {
 				t.Fatalf("control characters leaked: %q", out)
 			}
 		})
+	}
+}
+
+// The verdict, and its rendering, never carry PoC evidence that
+// contradicts the outcome: evidence from a run the outcome was not
+// derived from is dropped, and Render keys off the outcome.
+func TestComposeReproNeverContradictsOutcome(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	reproduced := func() *report.ReproResult {
+		return &report.ReproResult{Ref: sha, Reproduced: true, Signal: "panic-in-claimed-code", ControlState: "fixed"}
+	}
+	missing := []report.Claim{{Kind: report.ClaimFunction, Value: "x", Verified: report.TriNo}}
+	tests := []struct {
+		name string
+		res  StageResults
+		want report.Outcome
+	}{
+		{"sandbox not run, repro present", StageResults{GroundingRan: true, RefResolved: true, ResolvedRef: sha,
+			Sandbox: SandboxOutcome{Repro: reproduced()}}, report.OutcomeNeedsInfo},
+		{"sandbox not run, PoC, repro present", StageResults{GroundingRan: true, RefResolved: true, ResolvedRef: sha, HasPoC: true,
+			Sandbox: SandboxOutcome{Repro: reproduced()}}, report.OutcomeInconclusive},
+		{"hard grounding failure, sandbox ran", StageResults{GroundingRan: true, RefResolved: true, ResolvedRef: sha, HasPoC: true, Claims: missing,
+			SandboxRan: true, Sandbox: SandboxOutcome{Repro: reproduced()}}, report.OutcomeGroundingFailed},
+		{"PoC needs info, repro present", StageResults{GroundingRan: true, RefResolved: true, ResolvedRef: sha, HasPoC: true,
+			SandboxRan: true, Sandbox: SandboxOutcome{NeedsInfo: "bad PoC", Repro: reproduced()}}, report.OutcomeNeedsInfo},
+		{"skipped, repro present", StageResults{GroundingRan: true, RefResolved: true, ResolvedRef: sha, HasPoC: true,
+			SandboxRan: true, Sandbox: SandboxOutcome{Skipped: "no rootfs", Repro: reproduced()}}, report.OutcomeInconclusive},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha}
+			v := Compose(r, tt.res)
+			if v.Outcome != tt.want {
+				t.Fatalf("Outcome = %s, want %s", v.Outcome, tt.want)
+			}
+			if v.Repro != nil {
+				t.Errorf("Repro = %+v, want nil", v.Repro)
+			}
+			out := Render(r, v)
+			for _, bad := range []string{"PoC: reproduced", "control at HEAD", "PoC ran clean", pocOutputNote} {
+				if strings.Contains(out, bad) {
+					t.Errorf("Render has %q:\n%s", bad, out)
+				}
+			}
+		})
+	}
+}
+
+// Render prints reproduction lines only for a reproduction outcome,
+// even if a hand-built verdict carries a reproduced Repro.
+func TestRenderKeysOffOutcome(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha}
+	rr := &report.ReproResult{Ref: sha, Reproduced: true, Signal: "panic-in-claimed-code", ControlState: "fixed"}
+	for _, o := range []report.Outcome{report.OutcomeNeedsInfo, report.OutcomeGroundingFailed, report.OutcomeInconclusive, report.OutcomeLikelyDuplicate} {
+		out := Render(r, report.Verdict{ReportID: "R1", Outcome: o, Repro: rr})
+		if strings.Contains(out, "PoC: reproduced") || strings.Contains(out, "control at HEAD") || strings.Contains(out, "PoC ran clean") {
+			t.Errorf("%s: Render shows repro lines:\n%s", o, out)
+		}
+	}
+	out := Render(r, report.Verdict{ReportID: "R1", Outcome: report.OutcomeNotReproduced, Repro: &report.ReproResult{Ref: sha}})
+	if !strings.Contains(out, "• PoC ran clean at e1fcd82abba3\n") || strings.Contains(out, "PoC: reproduced") {
+		t.Errorf("NOT_REPRODUCED render wrong:\n%s", out)
 	}
 }

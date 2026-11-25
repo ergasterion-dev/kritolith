@@ -12,6 +12,7 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/report"
 	"github.com/ergasterion-dev/kritolith/internal/sandbox"
 	"github.com/ergasterion-dev/kritolith/internal/store"
+	"github.com/ergasterion-dev/kritolith/internal/verdict"
 )
 
 type fakeStore struct {
@@ -484,5 +485,82 @@ func TestRunSandboxNoPoCStoresNeedsInfo(t *testing.T) {
 	}
 	if got.Outcome != report.OutcomeNeedsInfo || got.Repro != nil {
 		t.Errorf("stored verdict = %s (repro %+v), want NEEDS_INFO with no repro", got.Outcome, got.Repro)
+	}
+}
+
+// A panicking log sink must not stop the verdict from being stored,
+// and the sink gets its own copy of the logs.
+func TestRunSandboxLogSinkPanicStillStoresVerdict(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	fr := &fakeRunner{result: sandbox.Result{Repro: &report.ReproResult{Ref: sha}, Passed: true, Logs: map[string][]byte{"run": []byte("out")}}}
+	sink := func(string, map[string][]byte) { panic("sink blew up") }
+	r := report.Report{ID: "01ARYZ6S410000000000000002", Source: report.SourceFile, Repo: "a/b", ClaimedRef: sha, PoC: []report.Artifact{{Name: "p_test.go"}}}
+	v, err := New(st).WithGround(fakeGrounder{resolved: true, resolvedRef: sha}).WithSandbox(fr).WithSandboxLogs(sink).Run(ctx, r)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got, err := st.GetVerdict(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("verdict not stored: %v", err)
+	}
+	if got.Outcome != report.OutcomeNotReproduced || v.Outcome != report.OutcomeNotReproduced {
+		t.Errorf("stored %s, returned %s, want NOT_REPRODUCED", got.Outcome, v.Outcome)
+	}
+}
+
+func TestRunSandboxLogSinkGetsACopy(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	orig := map[string][]byte{"run": []byte("out")}
+	fr := &fakeRunner{result: sandbox.Result{Repro: &report.ReproResult{Ref: sha}, Inconclusive: "timeout", Logs: orig}}
+	sink := func(_ string, l map[string][]byte) {
+		l["run"][0] = 'X'
+		l["extra"] = nil
+	}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha, PoC: []report.Artifact{{Name: "p_test.go"}}}
+	if _, err := New(&fakeStore{}).WithGround(fakeGrounder{resolved: true, resolvedRef: sha}).WithSandbox(fr).WithSandboxLogs(sink).Run(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if string(orig["run"]) != "out" || len(orig) != 1 {
+		t.Errorf("sink mutated the runner's logs: %q", orig)
+	}
+}
+
+// verdict keeps its own copies of the sandbox's control-state and
+// signal names (it does not import sandbox); they must stay equal.
+func TestVerdictSandboxConstantsMatch(t *testing.T) {
+	pairs := [][2]string{
+		{verdict.ControlFixed, sandbox.ControlFixed},
+		{verdict.ControlStillReproduces, sandbox.ControlStillReproduces},
+		{verdict.SignalFailingTest, sandbox.KindFailingTest},
+	}
+	for _, p := range pairs {
+		if p[0] != p[1] {
+			t.Errorf("verdict %q != sandbox %q", p[0], p[1])
+		}
+	}
+}
+
+// With a sandbox configured but the stage gated off (no grounder), a
+// report with a PoC says the stage did not run, not that no sandbox is
+// configured.
+func TestRunSandboxConfiguredButGatedOff(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	fr := &fakeRunner{}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha, PoC: []report.Artifact{{Name: "p_test.go"}}}
+	v, err := New(&fakeStore{}).WithSandbox(fr).Run(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.calls) != 0 || v.Outcome != report.OutcomeInconclusive || v.Repro != nil {
+		t.Fatalf("calls %d, outcome %s, repro %+v", len(fr.calls), v.Outcome, v.Repro)
+	}
+	if !strings.Contains(strings.Join(v.Notes, "\n"), "PoC not run: the sandbox stage did not run") {
+		t.Errorf("Notes = %q", v.Notes)
 	}
 }

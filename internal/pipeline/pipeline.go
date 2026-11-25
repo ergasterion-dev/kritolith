@@ -6,6 +6,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/ergasterion-dev/kritolith/internal/dedupe"
 	"github.com/ergasterion-dev/kritolith/internal/extract/deterministic"
@@ -41,7 +42,8 @@ type SandboxRunner interface {
 // SandboxLogSink receives the capped phase logs of a sandbox run, keyed
 // by phase. The logs are hostile, reporter-controlled text: a sink may
 // keep them in the local store, but they never go into the verdict or
-// the emailed bundle.
+// the emailed bundle. The sink gets its own copy of the logs and may
+// keep it. A panicking sink is logged and ignored.
 type SandboxLogSink func(reportID string, logs map[string][]byte)
 
 // Signer signs a composed verdict. *verdict.Signer implements it.
@@ -122,7 +124,7 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 		llmUnavailable = len(llmClaims) == 0
 		claims = mergeClaims(claims, llmClaims)
 	}
-	res := verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable, HasPoC: len(r.PoC) > 0}
+	res := verdict.StageResults{Claims: claims, LLMUnavailable: llmUnavailable, HasPoC: len(r.PoC) > 0, SandboxConfigured: p.sandbox != nil}
 	if p.grounder != nil {
 		gr := p.grounder.Ground(ctx, r, claims)
 		res.Claims = gr.Claims
@@ -146,7 +148,7 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 		res.SandboxRan = true
 		res.Sandbox = out
 		if p.logSink != nil && len(logs) > 0 {
-			p.logSink(r.ID, logs)
+			p.sendLogs(r.ID, logs)
 		}
 	}
 	v := verdict.Compose(r, res)
@@ -193,6 +195,22 @@ func (p *Pipeline) runSandbox(ctx context.Context, req sandbox.Request) (out ver
 		}
 	}
 	return out, res.Logs
+}
+
+// sendLogs hands the sink a deep copy of logs. A panic in the sink is
+// logged (without report content) and does not stop the verdict from
+// being composed and stored.
+func (p *Pipeline) sendLogs(reportID string, logs map[string][]byte) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Warn("pipeline: sandbox log sink panicked; logs not kept", "report_id", reportID)
+		}
+	}()
+	cp := make(map[string][]byte, len(logs))
+	for k, v := range logs {
+		cp[k] = append([]byte(nil), v...)
+	}
+	p.logSink(reportID, cp)
 }
 
 // cloneRepro deep-copies a ReproResult so the verdict never shares
