@@ -1,0 +1,9 @@
+package vuln
+
+import "testing"
+
+// TestParseOverflow passes a length byte larger than the input, which
+// panics inside Parse: a panic with the claimed function in the stack.
+func TestParseOverflow(t *testing.T) {
+	Parse([]byte{200, 'x'})
+}

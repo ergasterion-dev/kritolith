@@ -1,0 +1,40 @@
+package vuln
+
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"testing"
+	"time"
+)
+
+// TestHostileNetwork tries to reach the network from the run phase:
+// a listener on the host (loopback and a host address), public IPs, DNS
+// and plain HTTP. Every attempt must fail; any success prints the
+// escape marker the integration test looks for.
+func TestHostileNetwork(t *testing.T) {
+	targets := []string{"@@HOST_HTTP@@", "@@HOST_IP_HTTP@@", "1.1.1.1:53", "8.8.8.8:443", "[2606:4700:4700::1111]:53"}
+	for _, a := range targets {
+		if a == "" {
+			continue
+		}
+		c, err := net.DialTimeout("tcp", a, 3*time.Second)
+		if err != nil {
+			fmt.Printf("dial %s blocked: %v\n", a, err)
+			continue
+		}
+		c.Close()
+		fmt.Println("KRITOLITH-ESCAPE network dial", a)
+	}
+	if addrs, err := net.LookupHost("proxy.golang.org"); err == nil {
+		fmt.Println("KRITOLITH-ESCAPE dns", addrs)
+	}
+	cl := &http.Client{Timeout: 3 * time.Second}
+	for _, u := range []string{"http://@@HOST_HTTP@@/", "http://@@HOST_IP_HTTP@@/", "https://proxy.golang.org/"} {
+		if resp, err := cl.Get(u); err == nil {
+			resp.Body.Close()
+			fmt.Println("KRITOLITH-ESCAPE http", u)
+		}
+	}
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}

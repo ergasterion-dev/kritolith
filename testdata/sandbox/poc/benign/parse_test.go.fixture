@@ -1,0 +1,11 @@
+package vuln
+
+import "testing"
+
+// TestParseWellFormed calls the claimed function with valid input and
+// passes: the run is clean, so the outcome is NOT_REPRODUCED.
+func TestParseWellFormed(t *testing.T) {
+	if got := Parse([]byte{2, 'o', 'k'}); got != 2 {
+		t.Fatalf("Parse = %d, want 2", got)
+	}
+}

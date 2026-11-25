@@ -1,0 +1,23 @@
+package vuln
+
+import (
+	"fmt"
+	"testing"
+)
+
+// TestHostileMemoryBomb allocates and touches memory until something
+// stops it. Only the cgroup memory limit can; this fixture is skipped
+// when cgroups are not in force.
+func TestHostileMemoryBomb(t *testing.T) {
+	var keep [][]byte
+	for i := 0; ; i++ {
+		b := make([]byte, 64<<20)
+		for j := 0; j < len(b); j += 4096 {
+			b[j] = 1
+		}
+		keep = append(keep, b)
+		if i%8 == 0 {
+			fmt.Printf("holding %d MiB\n", len(keep)*64)
+		}
+	}
+}

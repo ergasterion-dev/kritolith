@@ -1,0 +1,7 @@
+module example.com/victim
+
+go 1.22
+
+// Honoured, this would make the go tool download and run another
+// toolchain.
+toolchain go1.99.0

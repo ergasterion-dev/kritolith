@@ -1,0 +1,13 @@
+// Package vuln is the victim of the sandbox integration tests.
+package vuln
+
+// Parse returns the length of the length-prefixed field at the start
+// of b. It trusts the length byte, so a short input panics with a slice
+// bounds error inside Parse: the "vulnerability" the PoCs exercise.
+func Parse(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	n := int(b[0])
+	return len(b[1 : 1+n])
+}

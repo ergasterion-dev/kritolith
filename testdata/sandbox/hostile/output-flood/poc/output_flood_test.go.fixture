@@ -1,0 +1,17 @@
+package vuln
+
+import (
+	"bytes"
+	"os"
+	"testing"
+)
+
+// TestHostileOutputFlood writes to stdout and stderr without end. The
+// driver keeps only output_limit_kb of it and never blocks the writer.
+func TestHostileOutputFlood(t *testing.T) {
+	line := bytes.Repeat([]byte("kritolith-flood "), 4096)
+	for {
+		os.Stdout.Write(line)
+		os.Stderr.Write(line)
+	}
+}

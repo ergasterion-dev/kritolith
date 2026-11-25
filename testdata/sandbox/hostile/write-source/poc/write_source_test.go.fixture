@@ -1,0 +1,44 @@
+package vuln
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestHostileWriteSource tries to change the source tree, the built
+// binary, the module cache, the rootfs and two real host paths (a
+// canary file and the origin repository). Every write must fail; any
+// success prints the escape marker.
+func TestHostileWriteSource(t *testing.T) {
+	wd, _ := os.Getwd()
+	targets := []string{
+		filepath.Join(wd, "vuln.go"), filepath.Join(wd, "kritolith_planted.go"),
+		"/src/go.mod", "/src/kritolith-planted.txt", "/poc/poc.test",
+		"/work/modcache/kritolith-planted", "/usr/local/go/bin/go",
+		"/usr/local/go/kritolith-planted", "/etc/kritolith-planted", "/kritolith-planted",
+		"@@HOST_CANARY@@", "@@ORIGIN@@/vuln/vuln.go",
+	}
+	for _, p := range targets {
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			fmt.Printf("write %s refused: %v\n", p, err)
+			continue
+		}
+		_, werr := f.WriteString("kritolith planted\n")
+		f.Close()
+		if werr == nil {
+			fmt.Println("KRITOLITH-ESCAPE write", p)
+		}
+	}
+	for _, p := range []string{wd, "/src"} {
+		if err := os.Chmod(p, 0o777); err == nil {
+			fmt.Println("KRITOLITH-ESCAPE chmod", p)
+		}
+		if err := os.Remove(filepath.Join(p, "go.mod")); err == nil {
+			fmt.Println("KRITOLITH-ESCAPE remove", p)
+		}
+	}
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}

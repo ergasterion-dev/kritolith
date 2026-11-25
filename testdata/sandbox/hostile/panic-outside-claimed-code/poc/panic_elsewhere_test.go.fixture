@@ -1,0 +1,14 @@
+package vuln
+
+import "testing"
+
+// TestHostilePanicElsewhere runs the claimed code cleanly and then
+// panics in its own frame (a nil map write). The claimed function is
+// not in the stack, so this is never a reproduction.
+func TestHostilePanicElsewhere(t *testing.T) {
+	if got := Parse([]byte{1, 'a'}); got != 1 {
+		t.Fatalf("Parse = %d", got)
+	}
+	var m map[string]int
+	m["boom"]++
+}

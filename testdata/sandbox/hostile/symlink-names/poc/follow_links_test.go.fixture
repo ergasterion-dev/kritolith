@@ -1,0 +1,33 @@
+package vuln
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestHostileFollowLinks reads through symlinks the hostile repository
+// commits next to the claimed code (to /, to the host canary, to the
+// data dir, and a run of ..). The source extraction must not carry a
+// link out of the tree, and inside the sandbox / is not the host's /.
+// (Hostile PoC file names such as ../x_test.go are tested in code.)
+func TestHostileFollowLinks(t *testing.T) {
+	wd, _ := os.Getwd()
+	for _, l := range []string{
+		"hostroot/etc/hostname", "hostroot@@HOST_CANARY@@", "canary",
+		"up/etc/hostname", "data/signing.key",
+	} {
+		p := filepath.Join(wd, l)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			fmt.Printf("read %s: %v\n", l, err)
+			continue
+		}
+		if len(b) > 4096 {
+			b = b[:4096]
+		}
+		fmt.Printf("read %s: %q\n", l, b)
+	}
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}

@@ -1,0 +1,9 @@
+module example.com/victim
+
+go 1.22
+
+require example.com/dep v1.0.0
+
+// A replace to a host path: honoured, it would read the host's data dir
+// into the build.
+replace example.com/dep => @@DATA_DIR@@

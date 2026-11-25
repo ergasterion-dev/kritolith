@@ -1,0 +1,57 @@
+package vuln
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestHostileReadHost dumps what a PoC can see of its host: its
+// environment, /proc, well-known paths, and two real host paths (a
+// canary file and the signing key in the data dir). The integration
+// test checks that no host secret appears in the output.
+func TestHostileReadHost(t *testing.T) {
+	fmt.Println("environ:", strings.Join(os.Environ(), " "))
+	paths := []string{
+		"/proc/self/environ", "/proc/1/environ", "/proc/1/cmdline", "/proc/self/mountinfo",
+		"/proc/mounts", "/proc/self/cgroup", "/proc/self/status", "/etc/hostname", "/etc/hosts",
+		"/etc/resolv.conf", "@@HOST_CANARY@@", "@@DATA_DIR@@/signing.key",
+	}
+	if m, err := filepath.Glob("/proc/[0-9]*/environ"); err == nil {
+		paths = append(paths, m...)
+	}
+	for _, p := range paths {
+		dump(p)
+	}
+	for _, d := range []string{"/", "/root", "/home", "/var/lib", "/run", "/proc", "/sys", "/dev"} {
+		list(d)
+	}
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}
+
+func dump(p string) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		fmt.Printf("read %s: %v\n", p, err)
+		return
+	}
+	if len(b) > 4096 {
+		b = b[:4096]
+	}
+	fmt.Printf("read %s: %q\n", p, b)
+}
+
+func list(d string) {
+	ents, err := os.ReadDir(d)
+	if err != nil {
+		fmt.Printf("list %s: %v\n", d, err)
+		return
+	}
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	fmt.Printf("list %s: %s\n", d, strings.Join(names, " "))
+}

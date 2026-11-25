@@ -1,0 +1,9 @@
+package vuln
+
+import "testing"
+
+// TestBenignBehindHostileGoMod would pass; the repository's go.mod is
+// the hostile part and must stop the run before any container starts.
+func TestBenignBehindHostileGoMod(t *testing.T) {
+	Parse([]byte{1, 'a'})
+}

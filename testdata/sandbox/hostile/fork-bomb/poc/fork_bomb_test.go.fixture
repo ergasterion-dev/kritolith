@@ -1,0 +1,22 @@
+package vuln
+
+import (
+	"fmt"
+	"os/exec"
+	"testing"
+)
+
+// TestHostileForkBomb spawns processes until the process limit stops
+// it, then starts a shell fork bomb and waits. The RLIMIT_NPROC and
+// pids limits must hold it, and the host wall clock must end the run.
+func TestHostileForkBomb(t *testing.T) {
+	n := 0
+	for ; n < 1<<20; n++ {
+		if err := exec.Command("/bin/sleep", "3600").Start(); err != nil {
+			fmt.Printf("process limit reached after %d children: %v\n", n, err)
+			break
+		}
+	}
+	_ = exec.Command("/bin/sh", "-c", "b() { b | b & }; b; sleep 3600").Run()
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}

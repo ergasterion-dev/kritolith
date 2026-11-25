@@ -1,0 +1,14 @@
+Sandbox integration fixtures. Every file here ends in ".fixture" so that
+no Go tool (build, vet, test, gofmt) ever sees it as source: these are
+hostile programs meant to run only inside the gVisor sandbox, through
+internal/sandbox/integration_test.go (build tag "sandbox"). The test
+strips the suffix and fills the @@...@@ placeholders before use.
+
+  repo/         the victim module (example.com/victim), vuln.Parse panics
+  repo-fixed/   overlay that fixes vuln.Parse (the HEAD of the control test)
+  poc/benign/   a passing PoC                  -> NOT_REPRODUCED
+  poc/panic/    a panic through vuln.Parse     -> REPRODUCED
+  hostile/<n>/  poc/ (and optionally repo/ overlay files); each must end
+                INCONCLUSIVE or NEEDS_INFO with no effect on the host
+
+Do not build or run any of this outside the sandbox.

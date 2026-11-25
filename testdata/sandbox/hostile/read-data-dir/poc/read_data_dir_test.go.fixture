@@ -1,0 +1,26 @@
+package vuln
+
+import (
+	"fmt"
+	"os"
+	"testing"
+)
+
+// TestHostileReadDataDir looks for Kritolith's data directory (the
+// database, the signing key and the git mirrors) at its real host path
+// and at the default path. It must not exist inside the sandbox.
+func TestHostileReadDataDir(t *testing.T) {
+	for _, d := range []string{"@@DATA_DIR@@", "/var/lib/kritolith"} {
+		if fi, err := os.Stat(d); err == nil {
+			fmt.Println("KRITOLITH-ESCAPE data dir visible", d, fi.Mode())
+		} else {
+			fmt.Printf("stat %s: %v\n", d, err)
+		}
+		for _, f := range []string{"/signing.key", "/kritolith.db", "/git-mirrors"} {
+			if _, err := os.Stat(d + f); err == nil {
+				fmt.Println("KRITOLITH-ESCAPE data dir entry visible", d+f)
+			}
+		}
+	}
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}

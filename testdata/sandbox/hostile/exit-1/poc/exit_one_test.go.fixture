@@ -1,0 +1,14 @@
+package vuln
+
+import (
+	"os"
+	"testing"
+)
+
+// TestHostileExitOne runs the claimed code cleanly and then only calls
+// os.Exit(1): a non-zero exit with no signal in claimed code, which is
+// never a reproduction.
+func TestHostileExitOne(t *testing.T) {
+	Parse([]byte{1, 'a'})
+	os.Exit(1)
+}

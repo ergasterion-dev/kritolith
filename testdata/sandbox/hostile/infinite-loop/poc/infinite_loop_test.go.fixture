@@ -1,0 +1,19 @@
+package vuln
+
+import (
+	"runtime"
+	"testing"
+)
+
+// TestHostileInfiniteLoop spins every CPU forever. The CPU-time rlimit,
+// Go's own test timeout and the host wall clock must end it.
+func TestHostileInfiniteLoop(t *testing.T) {
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			for {
+			}
+		}()
+	}
+	for {
+	}
+}
