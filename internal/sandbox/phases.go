@@ -72,6 +72,10 @@ const newerGoText = "requires go >= "
 // built without -race (no C compiler in the rootfs).
 const reasonNoRace = "the PoC ran clean, but it was built without -race (the sandbox rootfs has no C compiler), so a clean run cannot rule out a data race; install a C compiler in the rootfs"
 
+// reasonNoRunOutCap starts the Inconclusive reason for a run phase
+// whose /out could not be size-capped (runout.go).
+const reasonNoRunOutCap = "the PoC was not run: the run phase's /out could not be size-capped"
+
 const reasonNewerGo = "the repository needs a newer Go than the sandbox rootfs provides (go.mod requires go >= a version the rootfs does not have)"
 
 // attempt is the result of running the PoC at one ref.
@@ -147,7 +151,7 @@ func newLayout(root string) (layout, error) {
 	for _, d := range []struct {
 		p    *string
 		name string
-	}{{&l.modcache, "modcache"}, {&l.gocache, "gocache"}, {&l.tmp, "tmp"}, {&l.out, "out"}, {&l.runout, "runout"}} {
+	}{{&l.modcache, "modcache"}, {&l.gocache, "gocache"}, {&l.tmp, "tmp"}, {&l.out, "out"}, {&l.runout, runOutDirName}} {
 		*d.p = filepath.Join(root, d.name)
 		if err := os.Mkdir(*d.p, 0o700); err != nil {
 			return layout{}, err
@@ -502,7 +506,21 @@ func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, h
 		return a.fail("no test ran: the build produced no binary (the PoC's files may be excluded by build constraints)")
 	}
 
-	// Run (no network, source read-only).
+	// Run (no network, source read-only, /out size-capped).
+	if r.outFS == nil {
+		return a.fail(reasonNoRunOutCap + ": no mounter")
+	}
+	release, err := r.outFS.Mount(l.runout, runOutBytes, runOutInodes, r.uid, r.gid)
+	if err != nil {
+		return a.fail(reasonNoRunOutCap + ": " + report.Printable(err.Error()))
+	}
+	// Registered after the scratch removal, so it runs before it.
+	defer func() {
+		if err := release(); err != nil {
+			slog.Warn("sandbox: run /out cap not unmounted; the next start sweeps it", "error", err)
+			a.notes = append(a.notes, "the run phase's size-capped /out could not be unmounted; it is swept at the next start")
+		}
+	}()
 	runTimeout := time.Duration(r.cfg.RunTimeoutSeconds) * time.Second
 	out, err = r.d.Run(ctx, r.runPhaseSpec(l, runArgs(p, runTimeout, cover), dir))
 	a.record(PhaseRun, out.Output)

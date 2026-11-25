@@ -125,6 +125,9 @@ type Runner struct {
 	// bridge builds the fetch phase's network bridge; nil means the
 	// fetch phase has no network and ends INCONCLUSIVE.
 	bridge bridgeProvider
+	// outFS mounts the run phase's size-capped /out; nil means the run
+	// phase cannot start and ends INCONCLUSIVE.
+	outFS outMounter
 
 	raceOnce  sync.Once
 	race      bool
@@ -193,6 +196,7 @@ func newProduction(cfg config.Sandbox, src Source, resolve SourceResolver, workD
 	r.ignoreCgroups = ignoreCgroups
 	r.closer = d.Close
 	r.bridge = newHostBridges(d.workDir)
+	r.outFS = newHostOutFS()
 	return r, nil
 }
 

@@ -416,6 +416,16 @@ func leftovers(workDir string) []string {
 			out = append(out, "runsc containers: "+strings.Join(strings.Fields(string(b)), " "))
 		}
 	}
+	// Mounts: only runsc's own null-netns may stay while the driver lives.
+	mps, err := mountPointsUnder(workDir)
+	if err != nil {
+		out = append(out, err.Error())
+	}
+	for _, mp := range mps {
+		if mp != filepath.Join(state, nullNetnsName) {
+			out = append(out, "mount "+mp)
+		}
+	}
 	return append(out, processesMentioning(workDir)...)
 }
 
@@ -550,6 +560,43 @@ func TestSandboxHostileFixtures(t *testing.T) {
 			w.assertContained(t, res, cfg.OutputLimitKB*1024)
 		})
 	}
+}
+
+// TestSandboxRunOutIsCapped: a PoC that writes 256 MiB files to the
+// run phase's /out until a write fails is stopped at the size cap, the
+// coverage profile still reaches the host (the assertion failure is
+// seen as reaching claimed code), and no mount is left behind.
+func TestSandboxRunOutIsCapped(t *testing.T) {
+	env := needSandbox(t)
+	w := newWorld(t, env)
+	sha := w.commit(t, w.baseRepo(t, ""), nil)
+	cfg := testConfig()
+	r := w.runner(t, cfg, w.mirror(t, sha))
+	req := w.request(sha, fixtureArtifacts(t, fixturePath("hostile", "out-flood", "poc"), w.subst))
+	res := r.Run(context.Background(), req)
+	v := compose(req, res)
+	t.Logf("%s: %s", v.Outcome, describe(res))
+	if v.Outcome != report.OutcomeInconclusive || (res.Repro != nil && res.Repro.Reproduced) {
+		t.Fatalf("outcome %s, want INCONCLUSIVE\n%s", v.Outcome, logTail(res))
+	}
+	run := string(res.Logs[PhaseRun])
+	i := strings.Index(run, "KRITOLITH-OUT wrote ")
+	if i < 0 {
+		t.Fatalf("the flood never reported\n%s", logTail(res))
+	}
+	var total int64
+	var files int
+	if _, err := fmt.Sscanf(run[i:], "KRITOLITH-OUT wrote %d bytes in %d files", &total, &files); err != nil {
+		t.Fatalf("parse %q: %v", run[i:], err)
+	}
+	t.Logf("the PoC wrote %d bytes in %d files before a write failed", total, files)
+	if total > runOutBytes || total == 0 {
+		t.Errorf("wrote %d bytes to /out, want at most the %d byte cap", total, runOutBytes)
+	}
+	if res.Repro == nil || !strings.HasPrefix(res.Repro.Signal, KindFailingTest) {
+		t.Errorf("signal %v, want %s: the coverage profile did not come back through the capped /out", res.Repro, KindFailingTest)
+	}
+	w.assertContained(t, res, cfg.OutputLimitKB*1024)
 }
 
 // TestSandboxHostilePoCNames: file names that leave the package

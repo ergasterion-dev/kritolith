@@ -283,6 +283,7 @@ type fixture struct {
 	src     *fakeSource
 	drv     *fakeDriver
 	bridges *fakeBridges
+	outFS   *fakeOutFS
 	runner  *Runner
 	scratch string
 	rootfs  string
@@ -305,7 +306,9 @@ func newFixture(t *testing.T, script map[string]step) *fixture {
 	fb := &fakeBridges{drv: drv}
 	r := NewRunner(testCfg(rootfs), src, drv, scratch)
 	r.bridge = fb
-	return &fixture{src: src, drv: drv, bridges: fb, runner: r, scratch: scratch, rootfs: rootfs}
+	of := &fakeOutFS{drv: drv}
+	r.outFS = of
+	return &fixture{src: src, drv: drv, bridges: fb, outFS: of, runner: r, scratch: scratch, rootfs: rootfs}
 }
 
 // noCompiler removes the rootfs's C compiler, so the Runner builds

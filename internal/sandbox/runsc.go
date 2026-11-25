@@ -708,6 +708,10 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 	if err := unmountNullNetns(filepath.Join(workDir, runscStateDir)); err != nil {
 		errs = append(errs, err)
 	}
+	// Run-phase /out caps a crashed run left mounted.
+	if err := unmountRunOuts(workDir); err != nil {
+		errs = append(errs, err)
+	}
 	// Fetch bridges (namespaces kvc*/kvb*, their veth pair) left by a
 	// run of this work dir, found through its marker files.
 	if err := sweepBridges(workDir); err != nil {

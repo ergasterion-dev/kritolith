@@ -58,6 +58,7 @@ var hostileFixtures = []hostileFixture{
 	{name: "memory-bomb", needsCgroups: true},
 	{name: "infinite-loop"},
 	{name: "output-flood"},
+	{name: "out-flood"},
 	{name: "network"},
 	{name: "read-host"},
 	{name: "write-source"},

@@ -1,0 +1,48 @@
+package vuln
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestHostileOutFlood tries to fill the host disk through the run
+// phase's writable /out: 256 MiB files (the per-file rlimit), one after
+// another, until a write fails. The size cap on /out must stop it after
+// a few MiB. It then removes what it wrote and fails after calling the
+// claimed code, so the coverage profile must still reach the host.
+func TestHostileOutFlood(t *testing.T) {
+	if Parse([]byte{2, 'o', 'k'}) != 2 {
+		t.Fatal("setup")
+	}
+	chunk := make([]byte, 1<<20)
+	var total int64
+	var files []string
+	var werr error
+flood:
+	for i := 0; i < 400; i++ {
+		p := filepath.Join("/out", fmt.Sprintf("flood-%d", i))
+		f, err := os.Create(p)
+		if err != nil {
+			werr = err
+			break
+		}
+		files = append(files, p)
+		for j := 0; j < 256; j++ {
+			n, err := f.Write(chunk)
+			total += int64(n)
+			if err != nil {
+				werr = err
+				f.Close()
+				break flood
+			}
+		}
+		f.Close()
+	}
+	fmt.Printf("KRITOLITH-OUT wrote %d bytes in %d files: %v\n", total, len(files), werr)
+	for _, p := range files {
+		os.Remove(p)
+	}
+	t.Fatal("hostile fixture finished: nothing here is a reproduction")
+}
