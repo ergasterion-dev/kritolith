@@ -931,3 +931,85 @@ func TestDefaultBranchRefUnreachableRemote(t *testing.T) {
 		t.Fatalf("DefaultBranchRef = %q, want an error for a gone remote", got)
 	}
 }
+
+// In-tree attributes beyond export-*, and the host's git config, must
+// not change the archived tree or run anything: a filter driver defined
+// in the host's global config (as `git lfs install` does), ident,
+// text/eol conversion and working-tree-encoding are all off, and the
+// host's environment does not reach git archive.
+func TestArchiveIgnoresTreeAttributesAndHostConfig(t *testing.T) {
+	origin := t.TempDir()
+	gitIn(t, origin, "init", "-q", "-b", "main")
+	gitIn(t, origin, "config", "user.email", "test@test.example")
+	gitIn(t, origin, "config", "user.name", "test")
+	files := map[string]string{
+		"a.go":           "package a\n\n// $Id$\n",
+		"b.txt":          "line one\nline two\n",
+		"u16.txt":        "plain\n",
+		".gitattributes": "*.go filter=evil ident\n*.txt text eol=crlf\nu16.txt working-tree-encoding=UTF-16\n",
+	}
+	// The attributes go in after the files, so the blobs are the bytes
+	// above whatever the attributes say.
+	for _, pass := range []bool{false, true} {
+		for name, content := range files {
+			if (name == ".gitattributes") != pass {
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(origin, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		what := "-A"
+		if pass {
+			what = ".gitattributes"
+		}
+		gitIn(t, origin, "add", what)
+		gitIn(t, origin, "commit", "-q", "-m", "attrs")
+	}
+	commit := gitIn(t, origin, "rev-parse", "HEAD")
+
+	// The host's global config defines the filter driver and a user
+	// attributes file; a host secret sits in the environment.
+	home := t.TempDir()
+	marker := filepath.Join(home, "filter-ran")
+	global := filepath.Join(home, "gitconfig")
+	userAttrs := filepath.Join(home, "attributes")
+	if err := os.WriteFile(userAttrs, []byte("*.go export-ignore\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "[filter \"evil\"]\n\tsmudge = sh -c 'env > " + marker + "; sed s/package/PWNED/'\n\tclean = cat\n" +
+		"[core]\n\tattributesFile = " + userAttrs + "\n\tautocrlf = true\n"
+	if err := os.WriteFile(global, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("KRITOLITH_TEST_HOST_SECRET", "hunter2")
+	dst := filepath.Join(t.TempDir(), "src")
+	if err := m.Archive(ctx, commit, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a filter driver from the host's config ran during git archive")
+	}
+	for name, want := range files {
+		got, err := os.ReadFile(filepath.Join(dst, name))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want the committed bytes %q", name, got, err, want)
+		}
+	}
+	for _, kv := range archiveEnv() {
+		if strings.Contains(kv, "hunter2") || strings.HasPrefix(kv, "XDG_CONFIG_HOME=") || kv == "GIT_CONFIG_GLOBAL="+global {
+			t.Errorf("host environment reaches git archive: %s", kv)
+		}
+	}
+}

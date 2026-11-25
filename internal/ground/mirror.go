@@ -556,10 +556,36 @@ var (
 
 // archiveAttributes is written to the mirror's info/attributes, which
 // takes precedence over every in-tree .gitattributes: without it a
-// repository could hide files (export-ignore) or rewrite their content
-// (export-subst) in the extracted tree, so the tree the sandbox builds
-// would not be the code at the commit.
-const archiveAttributes = "* -export-ignore -export-subst\n"
+// repository could hide files (export-ignore), rewrite their content
+// (export-subst, ident, text/eol/crlf conversion,
+// working-tree-encoding) or name a filter driver (filter) in the
+// extracted tree, so the tree the sandbox builds would not be the code
+// at the commit. git archive always reads the archived tree's
+// .gitattributes (--worktree-attributes only adds the working tree's,
+// and a bare mirror has none), so the attributes are unset here rather
+// than turned off.
+const archiveAttributes = "* -export-ignore -export-subst -filter -ident -text -crlf -eol -working-tree-encoding\n"
+
+// archiveEnv is the whole environment of git archive: no host
+// variable (tokens, LLM keys, HOME) reaches it, the global and system
+// config and the user attributes file are not read (so a host
+// `git lfs install`, core.autocrlf or a filter driver does not apply),
+// and PATH is the host's so git finds its own helpers.
+func archiveEnv() []string {
+	return []string{
+		"PATH=" + os.Getenv("PATH"),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"HOME=/nonexistent",
+		"LC_ALL=C",
+	}
+}
+
+// archiveArgs pins, on the command line, the settings that would
+// otherwise come from the mirror's own config.
+var archiveArgs = []string{"-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false", "-c", "core.eol=lf"}
 
 // Archive extracts the tree of commit (a full object id the mirror
 // holds) into dst, which must be an absolute path to an empty directory
@@ -587,7 +613,8 @@ func (m *Mirror) Archive(ctx context.Context, commit, dst string) (err error) {
 	if err := m.pinArchiveAttributes(); err != nil {
 		return fmt.Errorf("ground: archive: %w", err)
 	}
-	cmd := gitCommand(ctx, m.path, "archive", "--format=tar", commit)
+	cmd := gitCommand(ctx, m.path, append(append([]string(nil), archiveArgs...), "archive", "--format=tar", commit)...)
+	cmd.Env = archiveEnv()
 	stderr := &headBuffer{limit: 4096}
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
