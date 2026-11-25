@@ -285,6 +285,11 @@ func unlockWorkDir(f *os.File) {
 // could not delete; those are left for SweepOrphans at the next start.
 func (d *runscDriver) Close() error {
 	err := d.retryPending()
+	// runsc leaves its null-netns mount behind; without this the work
+	// dir cannot be deleted.
+	if uerr := unmountNullNetns(filepath.Join(d.workDir, runscStateDir)); uerr != nil {
+		err = errors.Join(err, uerr)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.lock != nil {
@@ -628,6 +633,9 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 		if err := sweepContainers(rt, workDir, before); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := unmountNullNetns(filepath.Join(workDir, runscStateDir)); err != nil {
+		errs = append(errs, err)
 	}
 	ents, err := os.ReadDir(workDir)
 	if err != nil {
