@@ -25,7 +25,9 @@ type RunSpec struct {
 //
 // After a cancel or timeout, cleanup can take up to about 65s in the
 // worst case (runsc kill 30s, delete --force 30s, pipe drain 5s), so
-// callers should budget shutdown for that.
+// callers should budget shutdown for that. The runsc driver's and the
+// Runner's Close wait for in-flight runs, so the work dir lock and the
+// runsc state outlive that cleanup.
 type driver interface {
 	Run(ctx context.Context, s RunSpec) (RunOutput, error)
 }

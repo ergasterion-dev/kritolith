@@ -176,6 +176,11 @@ type runscDriver struct {
 
 	mu   sync.Mutex
 	lock *os.File
+	// closed refuses new Runs; inflight counts Runs Close waits for, so
+	// the null-netns mount and the work dir lock stay while one is
+	// still killing or deleting its container.
+	closed   bool
+	inflight sync.WaitGroup
 	// pending holds containers whose delete --force failed; they are
 	// retried at the start of each Run and by Close.
 	pending map[string]runscGlobals
@@ -296,7 +301,14 @@ func unlockWorkDir(f *os.File) {
 // Close retries the deletion of containers whose delete --force failed,
 // then releases the work dir lock. It returns the containers it still
 // could not delete; those are left for SweepOrphans at the next start.
+//
+// It first refuses new Runs and waits for those in flight, including
+// their kill and delete (up to about 65s each, see driver.go).
 func (d *runscDriver) Close() error {
+	d.mu.Lock()
+	d.closed = true
+	d.mu.Unlock()
+	d.inflight.Wait()
 	err := d.retryPending()
 	// runsc leaves its null-netns mount behind; without this the work
 	// dir cannot be deleted.
@@ -316,8 +328,16 @@ func (d *runscDriver) globals(network bool) runscGlobals {
 	return runscGlobals{Root: filepath.Join(d.workDir, runscStateDir), Network: network, IgnoreCgroups: d.ignoreCgroups}
 }
 
-// Run implements driver.
+// Run implements driver. After Close it refuses to run.
 func (d *runscDriver) Run(ctx context.Context, s RunSpec) (out RunOutput, err error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return RunOutput{}, errors.New("sandbox: the driver is closed")
+	}
+	d.inflight.Add(1)
+	d.mu.Unlock()
+	defer d.inflight.Done()
 	if s.Timeout <= 0 || s.Timeout > maxRunsTimeout {
 		return RunOutput{}, fmt.Errorf("sandbox: timeout %v out of range", s.Timeout)
 	}

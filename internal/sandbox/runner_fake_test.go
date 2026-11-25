@@ -121,6 +121,8 @@ type fakeDriver struct {
 	fetches int
 	pocName string
 	outside string // target of the escaping link a lock step leaves
+	// hook, if set, runs at the start of each Run without the lock.
+	hook func(phase string)
 }
 
 func phaseOf(args []string) string {
@@ -156,6 +158,9 @@ func listFiles(root string) []string {
 }
 
 func (f *fakeDriver) Run(ctx context.Context, s RunSpec) (RunOutput, error) {
+	if f.hook != nil {
+		f.hook(phaseOf(s.Container.Args))
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, err := BuildOCI(s.Container); err != nil {
@@ -346,3 +351,7 @@ func assertScratchEmpty(t *testing.T, scratch string) {
 		t.Fatalf("scratch directories left behind: %v", ents)
 	}
 }
+
+func reportWithPoC() report.Report { return report.Report{PoC: testPoC} }
+
+func defaultClaims() []report.Claim { return []report.Claim{parseClaim} }

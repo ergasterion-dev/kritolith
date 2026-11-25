@@ -132,6 +132,13 @@ type Runner struct {
 	raceOnce  sync.Once
 	race      bool
 	closeOnce sync.Once
+
+	// mu guards closed; inflight counts Runs that Close waits for, so
+	// the driver (its work dir lock, its runsc state) outlives every
+	// Run's cleanup.
+	mu       sync.Mutex
+	closed   bool
+	inflight sync.WaitGroup
 }
 
 // SourceResolver returns the Source for a report's repository
@@ -216,15 +223,34 @@ func (r *Runner) WithForbidden(paths ...string) *Runner {
 	return r
 }
 
-// Close releases the driver (its work dir lock and any containers it
-// could not delete). It is idempotent.
+// Close refuses new Runs, waits for those in flight (with their
+// cleanup), then releases the driver (its work dir lock and any
+// containers it could not delete). It is idempotent.
 func (r *Runner) Close() error {
-	if r == nil || r.closer == nil {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	r.inflight.Wait()
+	if r.closer == nil {
 		return nil
 	}
 	var err error
 	r.closeOnce.Do(func() { err = r.closer() })
 	return err
+}
+
+// enter registers a Run with Close; it is false once Close was called.
+func (r *Runner) enter() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.inflight.Add(1)
+	return true
 }
 
 // Run runs req's PoC at the resolved ref and, after a reproduction, at
@@ -236,9 +262,14 @@ func (r *Runner) Run(ctx context.Context, req Request) (res Result) {
 			res = Result{Inconclusive: "the sandbox stage failed internally; the run says nothing about the report"}
 		}
 	}()
-	switch {
-	case r == nil || !r.cfg.Enabled():
+	if r == nil || !r.cfg.Enabled() {
 		return Result{Skipped: "the sandbox is not configured"}
+	}
+	if !r.enter() {
+		return Result{Skipped: "the sandbox is closed (shutting down)"}
+	}
+	defer r.inflight.Done()
+	switch {
 	case r.d == nil || (r.src == nil && r.resolve == nil):
 		return Result{Skipped: "the sandbox is unavailable"}
 	case req.ResolvedRef == "":

@@ -88,8 +88,11 @@ func newProcessor(ctx context.Context, cfg *config.Config, dir string, stderr io
 	return pr, nil
 }
 
-// close releases the sandbox (its work dir lock) and the store. It is
-// safe to call more than once.
+// close releases the sandbox (its work dir lock) and the store. The
+// sandbox's Close first waits for an in-flight run to finish its
+// cleanup (the run sees the cancelled context, so that is bounded by
+// the driver's worst case, about 65s per container). It is safe to call
+// more than once.
 func (pr *processor) close() {
 	pr.closeOnce.Do(func() {
 		if pr.sandbox != nil {
