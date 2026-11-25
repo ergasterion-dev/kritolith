@@ -501,6 +501,9 @@ func (d *runscDriver) removeContainer(g runscGlobals, id string, killErr error) 
 		d.mu.Unlock()
 		return errors.Join(fmt.Errorf("sandbox: runsc delete --force %s: %w", id, err), killErr)
 	}
+	if rerr := removeStateFiles(g.Root, id); rerr != nil {
+		killErr = errors.Join(killErr, rerr)
+	}
 	if errors.Is(killErr, context.DeadlineExceeded) {
 		return killErr
 	}
@@ -522,9 +525,41 @@ func (d *runscDriver) retryPending() error {
 			errs = append(errs, fmt.Errorf("sandbox: runsc delete --force %s: %w", id, err))
 			continue
 		}
+		if rerr := removeStateFiles(g.Root, id); rerr != nil {
+			errs = append(errs, rerr)
+		}
 		d.mu.Lock()
 		delete(d.pending, id)
 		d.mu.Unlock()
+	}
+	return errors.Join(errs...)
+}
+
+// removeStateFiles removes the lock and socket files runsc leaves in its
+// state root for container id when it is killed while still creating the
+// sandbox (`delete --force` cannot remove what has no saved state).
+// Call it only after the container is deleted. Only plain entries whose
+// name contains this run's unique id are touched; a symlink is removed as
+// a link, never followed.
+func removeStateFiles(stateRoot, id string) error {
+	if !isOrphanName(id) {
+		return nil
+	}
+	ents, err := os.ReadDir(stateRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("sandbox: read runsc state: %w", err)
+	}
+	var errs []error
+	for _, e := range ents {
+		if !mentionsID(e.Name(), id) || e.IsDir() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(stateRoot, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("sandbox: remove runsc state file: %w", err))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -690,4 +725,24 @@ func sweepContainers(runtime, workDir string, before time.Time) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// mentionsID reports whether name holds id as a whole token: the id is
+// "kritolith-" plus random digits, so "kritolith-111" must not match
+// inside "kritolith-1112".
+func mentionsID(name, id string) bool {
+	for i := 0; ; {
+		j := strings.Index(name[i:], id)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(id)
+		if end == len(name) {
+			return true
+		}
+		if c := name[end]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return true
+		}
+		i += j + 1
+	}
 }
