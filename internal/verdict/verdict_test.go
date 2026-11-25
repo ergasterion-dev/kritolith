@@ -280,6 +280,10 @@ func TestRenderDuplicates(t *testing.T) {
 	}
 }
 
+// weakSignal is ReproResult.Signal as the sandbox Runner writes it for
+// signal 3: "<kind>: <detail>".
+const weakSignal = "failing-test-reaching-claimed-code: TestPoC failed, and coverage shows claimed code executed: vuln/vuln.go:4.27,6.2"
+
 // TestComposePrecedence has one row per line of Compose's documented
 // precedence (and of the spec's "Outcomes and where it plugs in").
 func TestComposePrecedence(t *testing.T) {
@@ -322,7 +326,7 @@ func TestComposePrecedence(t *testing.T) {
 		}), report.OutcomeReproducedFixedAtHead, "", false},
 		{"3b weak, control fixed", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
-			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "fixed"), Weak: true}
+			s.Sandbox = SandboxOutcome{Repro: repro(weakSignal, "fixed"), Weak: true}
 		}), report.OutcomeReproducedFixedAtHead, "", false},
 		{"3b strong, control still reproduces", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
@@ -330,24 +334,24 @@ func TestComposePrecedence(t *testing.T) {
 		}), report.OutcomeReproduced, "", false},
 		{"3b weak, control still reproduces (defensive)", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
-			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "still_reproduces"), Weak: true}
+			s.Sandbox = SandboxOutcome{Repro: repro(weakSignal, "still_reproduces"), Weak: true}
 		}), report.OutcomeInconclusive, "the PoC also fails at HEAD", false},
 		{"3b weak, control unavailable (defensive)", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
-			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "unavailable"), Weak: true}
+			s.Sandbox = SandboxOutcome{Repro: repro(weakSignal, "unavailable"), Weak: true}
 		}), report.OutcomeInconclusive, "assertion-only failure counts only", false},
 		{"3b weak by signal alone, control still reproduces", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
-			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "still_reproduces")}
+			s.Sandbox = SandboxOutcome{Repro: repro(weakSignal, "still_reproduces")}
 		}), report.OutcomeInconclusive, "the PoC also fails at HEAD", false},
 		{"3b weak by signal alone, control unavailable", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
-			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "unavailable")}
+			s.Sandbox = SandboxOutcome{Repro: repro(weakSignal, "unavailable")}
 		}), report.OutcomeInconclusive, "assertion-only failure counts only", false},
 		{"3b weak, control still reproduces, exact duplicate", sha, with(func(s *StageResults) {
 			dup(s)
 			s.SandboxRan = true
-			s.Sandbox = SandboxOutcome{Repro: repro("failing-test-reaching-claimed-code", "still_reproduces"), Weak: true}
+			s.Sandbox = SandboxOutcome{Repro: repro(weakSignal, "still_reproduces"), Weak: true}
 		}), report.OutcomeLikelyDuplicate, "the PoC also fails at HEAD", true},
 		{"3b strong, control unavailable", sha, with(func(s *StageResults) {
 			s.SandboxRan = true
@@ -462,8 +466,14 @@ func TestRenderRepro(t *testing.T) {
 			[]string{"• PoC: reproduced via panic-in-claimed-code at e1fcd82abba3\n", "• control at HEAD: fixed\n", pocOutputNote + "\n"},
 			[]string{"weak"}},
 		{"weak, fixed", report.Verdict{Outcome: report.OutcomeReproducedFixedAtHead,
-			Repro: &report.ReproResult{Ref: sha, Reproduced: true, Signal: "failing-test-reaching-claimed-code", ControlState: "fixed"}},
-			[]string{"• PoC: reproduced via failing-test-reaching-claimed-code at e1fcd82abba3 (weak: assertion-only failure)\n"}, nil},
+			Repro: &report.ReproResult{Ref: sha, Reproduced: true, Signal: weakSignal, ControlState: "fixed"}},
+			[]string{"• PoC: reproduced via " + weakSignal + " at e1fcd82abba3 (weak: assertion-only failure)\n"}, nil},
+		{"weak bare kind, fixed", report.Verdict{Outcome: report.OutcomeReproducedFixedAtHead,
+			Repro: &report.ReproResult{Ref: sha, Reproduced: true, Signal: SignalFailingTest, ControlState: "fixed"}},
+			[]string{"(weak: assertion-only failure)\n"}, nil},
+		{"lookalike kind is not weak", report.Verdict{Outcome: report.OutcomeReproducedFixedAtHead,
+			Repro: &report.ReproResult{Ref: sha, Reproduced: true, Signal: SignalFailingTest + "-x: detail", ControlState: "fixed"}},
+			nil, []string{"weak"}},
 		{"still reproduces", report.Verdict{Outcome: report.OutcomeReproduced,
 			Repro: &report.ReproResult{Ref: sha, Reproduced: true, Signal: "race-in-claimed-code", ControlState: "still_reproduces"}},
 			[]string{"• control at HEAD: still reproduces\n"}, nil},

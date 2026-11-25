@@ -192,7 +192,7 @@ func composeSandbox(v *report.Verdict, res StageResults, exactDup, fallbackDup b
 	var reason string // why a run that looked conclusive is not
 	switch {
 	case ran && rr.Reproduced:
-		weak := sb.Weak || rr.Signal == SignalFailingTest
+		weak := sb.Weak || isWeakSignal(rr.Signal)
 		switch {
 		case rr.ControlState == ControlFixed:
 			v.Outcome = report.OutcomeReproducedFixedAtHead
@@ -324,6 +324,15 @@ func Render(r report.Report, v report.Verdict) string {
 	return b.String()
 }
 
+// isWeakSignal reports whether a ReproResult.Signal is the weak,
+// assertion-only signal. The sandbox writes "<kind>: <detail>", so the
+// kind is matched as a prefix followed by ':' or the end of the string;
+// a longer kind that merely starts with the same text does not match.
+func isWeakSignal(sig string) bool {
+	rest, ok := strings.CutPrefix(sig, SignalFailingTest)
+	return ok && (rest == "" || rest[0] == ':')
+}
+
 // renderRepro writes the PoC evidence lines, keyed off the outcome:
 // reproduction lines only for a reproduction outcome, a clean-run line
 // only for NOT_REPRODUCED, and nothing otherwise (the notes say why). Every value in a
@@ -338,7 +347,7 @@ func renderRepro(b *strings.Builder, v report.Verdict) {
 	switch v.Outcome {
 	case report.OutcomeReproduced, report.OutcomeReproducedFixedAtHead:
 		fmt.Fprintf(b, "• PoC: reproduced via %s at %s", report.Printable(rr.Signal), ref)
-		if rr.Signal == SignalFailingTest {
+		if isWeakSignal(rr.Signal) {
 			b.WriteString(" (weak: assertion-only failure)")
 		}
 		b.WriteString("\n")
