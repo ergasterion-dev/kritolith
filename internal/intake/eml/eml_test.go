@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
+	"github.com/ergasterion-dev/kritolith/internal/sandbox"
 )
 
 func opts() Options {
@@ -117,14 +120,13 @@ iVBORw0KGgo=
 	for _, a := range r.PoC {
 		names = append(names, a.Name)
 	}
-	if got, want := strings.Join(names, " "), "poc_test.go authorized_keys 2-authorized_keys attachment.png"; got != want {
+	// Only Go source and fuzz seeds are PoC files; the key files and
+	// the image are dropped.
+	if got, want := strings.Join(names, " "), "poc_test.go"; got != want {
 		t.Fatalf("attachment names = %q, want %q", got, want)
 	}
 	if string(r.PoC[0].Content) != poc {
 		t.Errorf("attachment content = %q", r.PoC[0].Content)
-	}
-	if string(r.PoC[1].Content) != "key material" {
-		t.Errorf("attachment content = %q", r.PoC[1].Content)
 	}
 }
 
@@ -227,9 +229,9 @@ func TestLoadRejects(t *testing.T) {
 		"no boundary":      {msg: "Subject: s\nContent-Type: multipart/mixed\n\nbody\n", want: "no boundary"},
 		"nested too deep":  {msg: nested(maxDepth + 2), want: "nests multipart"},
 		"too many parts":   {msg: manyParts(maxParts+5, "Content-Type: text/plain"), want: "MIME parts"},
-		"too many files":   {msg: manyParts(MaxPoCFiles+1, "Content-Type: application/octet-stream"), want: "too many attachments"},
+		"too many files":   {msg: manyParts(MaxPoCFiles+1, "Content-Type: text/x-go; name=a.go"), want: "too many attachments"},
 		"truncated":        {msg: "Subject: s\nContent-Type: multipart/mixed; boundary=B\n\n--B\nContent-Type: text/plain\n\nx\n", want: "unexpected EOF"},
-		"attachments size": {msg: "Subject: s\nContent-Type: multipart/mixed; boundary=B\n\n--B\nContent-Type: application/octet-stream\n\n" + strings.Repeat("z", MaxPoCBytes+10) + "\n--B--\n", want: "attachments are larger"},
+		"attachments size": {msg: "Subject: s\nContent-Type: multipart/mixed; boundary=B\n\n--B\nContent-Type: text/x-go; name=a.go\n\n" + strings.Repeat("z", MaxPoCBytes+10) + "\n--B--\n", want: "attachments are larger"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -327,7 +329,9 @@ func FuzzLoad(f *testing.F) {
 		total, seen := 0, map[string]bool{}
 		for _, a := range r.PoC {
 			total += len(a.Content)
-			if a.Name == "" || a.Name != report.Printable(a.Name) || strings.ContainsAny(a.Name, `/\`) || strings.HasPrefix(a.Name, ".") || seen[a.Name] {
+			seed := fuzzSeedRe.MatchString(a.Name)
+			if a.Name == "" || a.Name != report.Printable(a.Name) || (!seed && strings.ContainsAny(a.Name, `/\`)) || strings.HasPrefix(a.Name, ".") || seen[a.Name] ||
+				(!seed && !strings.HasSuffix(a.Name, ".go")) {
 				t.Fatalf("attachment name %q", a.Name)
 			}
 			seen[a.Name] = true
@@ -336,4 +340,33 @@ func FuzzLoad(f *testing.F) {
 			t.Fatalf("attachments total %d bytes", total)
 		}
 	})
+}
+
+// A PGP-signed message (multipart/signed) with a Go PoC, a PDF writeup,
+// an inline image and the signature: only the Go file and the fuzz seed
+// are PoC files, so the signature and the other parts no longer void
+// the PoC.
+func TestLoadSignedMessageKeepsOnlyPoCFiles(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "signed.eml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := load(t, string(raw))
+	var names []string
+	for _, a := range r.PoC {
+		names = append(names, a.Name)
+	}
+	if got, want := strings.Join(names, " "), "poc_test.go testdata/fuzz/FuzzParse/seed1"; got != want {
+		t.Fatalf("PoC files = %q, want %q", got, want)
+	}
+	if !strings.Contains(r.Body, "vuln.Parse in vuln/vuln.go") {
+		t.Errorf("body = %q", r.Body)
+	}
+	// The Go file alone is what the sandbox accepts as a test PoC.
+	if _, err := sandbox.ValidatePoC(r.PoC[:1]); err != nil {
+		t.Fatalf("ValidatePoC(go file) = %v", err)
+	}
+	if _, err := sandbox.ValidatePoC(r.PoC[1:]); err != nil {
+		t.Fatalf("ValidatePoC(seed) = %v", err)
+	}
 }

@@ -1,0 +1,56 @@
+From: Reporter <reporter@example.org>
+To: security@example.org
+Subject: Out-of-range read in vuln.Parse
+Message-ID: <signed-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/signed; micalg=pgp-sha256;
+ protocol="application/pgp-signature"; boundary="sig"
+
+This is an OpenPGP/MIME signed message (RFC 4880 and 3156)
+--sig
+Content-Type: multipart/mixed; boundary="mix"
+
+--mix
+Content-Type: text/plain; charset=utf-8
+
+vuln.Parse in vuln/vuln.go reads past the end of a short input.
+The PoC is attached; the writeup is in the PDF and a screenshot.
+--mix
+Content-Type: text/x-go; name="poc_test.go"
+Content-Disposition: attachment; filename="poc_test.go"
+
+package vuln
+
+import "testing"
+
+func TestPoC(t *testing.T) { Parse([]byte{9}) }
+--mix
+Content-Type: application/pdf; name="writeup.pdf"
+Content-Disposition: attachment; filename="writeup.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsj6IKMSAwIG9iago8PC9UeXBlL0NhdGFsb2c+PgplbmRvYmoK
+--mix
+Content-Type: image/png
+Content-Disposition: inline
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgo=
+--mix
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="testdata/fuzz/FuzzParse/seed1"
+
+go test fuzz v1
+[]byte("\x09")
+--mix--
+--sig
+Content-Type: application/pgp-signature; name="signature.asc"
+Content-Description: OpenPGP digital signature
+Content-Disposition: attachment; filename="signature.asc"
+
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYIAB0WIQQAAAAAAAAAAAAAAAAAAAAAAAAAAAUCZ0AAAAAACgkQAAAAAAAA
+=AAAA
+-----END PGP SIGNATURE-----
+--sig--

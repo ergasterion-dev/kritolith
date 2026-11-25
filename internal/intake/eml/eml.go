@@ -12,11 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -45,8 +47,9 @@ type Options struct {
 
 // Load reads one message from r and returns it as a report. The
 // report text is the message's plain-text body (or its HTML body with
-// the markup removed, if there is no plain text); attachments become
-// PoC files. Nothing is executed or written to disk.
+// the markup removed, if there is no plain text); attachments that are
+// Go source files or fuzz seeds become PoC files, and the rest
+// (signatures, documents, images) are dropped. Nothing is executed or written to disk.
 func Load(r io.Reader, opts Options) (report.Report, error) {
 	if err := report.ValidateRepo(opts.Repo); err != nil {
 		return report.Report{}, fmt.Errorf("intake/eml: %w", err)
@@ -74,6 +77,10 @@ func Load(r io.Reader, opts Options) (report.Report, error) {
 	c := &collector{}
 	if err := c.walk(header(msg.Header), msg.Body, 0); err != nil {
 		return report.Report{}, fmt.Errorf("intake/eml: %w", err)
+	}
+	if c.dropped > 0 {
+		// The count only: attachment names are report content.
+		slog.Info("intake/eml: attachments that are not PoC files (Go source or fuzz seeds) were not kept", "count", c.dropped)
 	}
 	body := c.text()
 	if len(body) > MaxBodyBytes {
@@ -119,6 +126,8 @@ type collector struct {
 	parts       int
 	pocBytes    int
 	names       map[string]bool
+	// dropped counts attachments that are not PoC files.
+	dropped int
 }
 
 // text prefers the plain-text parts. HTML is used only when the
@@ -190,7 +199,21 @@ func (c *collector) walk(h header, body io.Reader, depth int) error {
 	return nil
 }
 
+// fuzzSeedRe is the one path shape a PoC file may have: a seed for an
+// existing fuzz target (the sandbox's ValidatePoC re-checks it).
+var fuzzSeedRe = regexp.MustCompile(`^testdata/fuzz/Fuzz[A-Za-z0-9_]*/[A-Za-z0-9._-]+$`)
+
+// addAttachment keeps a part as a PoC file only if the sandbox can use
+// it: a Go source file or a fuzz seed. Everything else (a PGP or S/MIME
+// signature, a PDF writeup, a screenshot) is dropped and counted, so a
+// signed or illustrated report still has its PoC run instead of the
+// whole PoC being refused.
 func (c *collector) addAttachment(name, mediaType string, decoded io.Reader) error {
+	seed := fuzzSeedPath(name)
+	if seed == "" && !strings.HasSuffix(path.Base(strings.ReplaceAll(name, "\\", "/")), ".go") {
+		c.dropped++
+		return nil
+	}
 	if len(c.attachments) == MaxPoCFiles {
 		return fmt.Errorf("too many attachments (limit %d)", MaxPoCFiles)
 	}
@@ -206,8 +229,39 @@ func (c *collector) addAttachment(name, mediaType string, decoded io.Reader) err
 	if c.names == nil {
 		c.names = map[string]bool{}
 	}
-	c.attachments = append(c.attachments, report.Artifact{Name: c.uniqueName(name, mediaType), Content: data})
+	n := ""
+	if seed != "" {
+		n = c.uniqueSeed(seed)
+	} else {
+		n = c.uniqueName(name, mediaType)
+	}
+	if seed == "" && !strings.HasSuffix(n, ".go") {
+		c.dropped++
+		return nil
+	}
+	c.attachments = append(c.attachments, report.Artifact{Name: n, Content: data})
 	return nil
+}
+
+// fuzzSeedPath returns the declared name as a fuzz seed path, or "".
+func fuzzSeedPath(name string) string {
+	n := strings.ReplaceAll(name, "\\", "/")
+	if fuzzSeedRe.MatchString(n) && path.Clean(n) == n {
+		return n
+	}
+	return ""
+}
+
+// uniqueSeed keeps a seed path distinct from earlier ones by prefixing
+// its last element.
+func (c *collector) uniqueSeed(p string) string {
+	dir, base := path.Split(p)
+	candidate := p
+	for i := 2; c.names[candidate]; i++ {
+		candidate = fmt.Sprintf("%s%d-%s", dir, i, base)
+	}
+	c.names[candidate] = true
+	return candidate
 }
 
 // uniqueName returns a safe, distinct file name for an attachment. A

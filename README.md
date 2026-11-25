@@ -114,7 +114,7 @@ Security reports describe unfixed vulnerabilities, so Kritolith is **local-first
 |---|---|---|
 | `kritolith check --repo owner/name [--ref sha] [--poc dir] [--json] report.md` | works | Verify one report file. |
 | `kritolith check --repo owner/name [--ref sha] --ghsa GHSA-xxxx-xxxx-xxxx` | works | Verify a report filed through GitHub private vulnerability reporting, fetched with your own token. |
-| `kritolith ingest --eml --repo owner/name [--ref sha] < message.eml` | works | Verify a report from a raw email message. Attachments are kept as PoC files. |
+| `kritolith ingest --eml --repo owner/name [--ref sha] < message.eml` | works | Verify a report from a raw email message. Attachments that are Go files or fuzz seeds (`testdata/fuzz/FuzzX/seed`) are kept as PoC files; signatures, documents and images are dropped. |
 | `kritolith keygen` | works | Create the ed25519 key that signs verdicts. Once it exists, every verdict is signed. |
 | `kritolith check ... --bundle file.tar` (also `ingest`) | works | Also write the signed evidence bundle: the verdict and a detached signature. |
 | `kritolith check ... --notify` (also `ingest`) | works | Also email the verdict, with its bundle if signed, to the project's `notify` addresses. |
