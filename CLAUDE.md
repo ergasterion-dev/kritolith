@@ -5,7 +5,7 @@ Kritolith verifies incoming security vulnerability reports before a maintainer r
 - Repo: `github.com/ergasterion-dev/kritolith`
 - Module path: `github.com/ergasterion-dev/kritolith`
 - License: Apache-2.0
-- Status: pre-alpha. The sandbox has run on a real runsc (corpus: 15 of 20 real PoCs reproduce), but its hostile-input suite and the whole-branch security review are not finished. Do not run on real embargoed reports until they are.
+- Status: pre-alpha. The sandbox has run on a real runsc: probes and the hostile-fixture suite pass, the whole-branch security review is done and its findings fixed, and the corpus reproduces 15 to 17 of 20 real PoCs. Not yet released as v0.1; read the latest handoff before running on real embargoed reports.
 
 ---
 
