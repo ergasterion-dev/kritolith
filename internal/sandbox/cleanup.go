@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -16,12 +15,25 @@ import (
 // removeScratch removes one scratch tree; tests replace it.
 var removeScratch = removeAllForce
 
+// fastRemoveAll is removeAllForce's first attempt; tests make it fail
+// to force the fallback.
+var fastRemoveAll = os.RemoveAll
+
+// beforeForceChmod runs just before the fallback gives a directory
+// u+rwx, with the directory's path; tests use it to swap the directory
+// for a symlink at that moment.
+var beforeForceChmod = func(string) {}
+
 // removeAllForce removes root even when the tree holds directories
 // without owner write or search permission (`go mod download` makes
-// module directories 0555; a PoC can chmod what it writes). It walks
-// the tree without following symlinks, gives every real directory
-// u+rwx, then removes it. A symlink, including root itself, is removed
-// as a link: nothing is ever chmodded or removed through one.
+// module directories 0555; a PoC can chmod what it writes). A plain
+// RemoveAll comes first; if it fails, forceRemoveTree walks the tree,
+// gives every real directory u+rwx and removes it. A symlink, including
+// root itself, is removed as a link: nothing is ever chmodded or removed
+// through one, even when a still-running writer swaps a directory for a
+// link while the walk is under way (on Linux every step is relative to
+// a directory fd opened with O_NOFOLLOW, and the chmod goes through
+// that fd).
 func removeAllForce(root string) error {
 	fi, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -33,26 +45,10 @@ func removeAllForce(root string) error {
 	if !fi.IsDir() {
 		return os.Remove(root)
 	}
-	if err := os.RemoveAll(root); err == nil {
+	if err := fastRemoveAll(root); err == nil {
 		return nil
 	}
-	// WalkDir calls fn for a directory before reading it, so the chmod
-	// comes first; it never follows a symlink, and the Lstat re-check
-	// makes sure p is still a real directory.
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if d == nil || !d.IsDir() {
-			return nil
-		}
-		fi, lerr := os.Lstat(p)
-		if lerr != nil || !fi.IsDir() {
-			return nil
-		}
-		if perm := fi.Mode().Perm(); perm&0o700 != 0o700 {
-			_ = os.Chmod(p, perm|0o700)
-		}
-		return nil
-	})
-	return os.RemoveAll(root)
+	return forceRemoveTree(root)
 }
 
 // errnoText is the system error of a filesystem failure without its

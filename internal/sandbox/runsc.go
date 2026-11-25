@@ -692,8 +692,16 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 	defer unlockWorkDir(lock)
 
 	var errs []error
+	// live is the set of our containers runsc still lists after the
+	// container sweep; known is false when that could not be found out.
+	// A tree is removed only when no container that may still write
+	// into it can be running.
+	var live map[string]bool
+	known := false
 	if rt, err := exec.LookPath(runtime); err == nil {
-		if err := sweepContainers(rt, workDir, before); err != nil {
+		live, err = sweepContainers(rt, workDir, before)
+		known = live != nil
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -709,6 +717,7 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 	if err != nil {
 		return errors.Join(append(errs, fmt.Errorf("sandbox: sweep: read %s: %w", workDir, err))...)
 	}
+	kept := 0
 	for _, e := range ents {
 		if !isOrphanName(e.Name()) {
 			continue
@@ -723,37 +732,82 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 		if !fi.IsDir() || !fi.ModTime().Before(before) {
 			continue
 		}
+		// A scratch tree is mounted by several containers whose ids are
+		// not recorded, so it waits until none of ours is listed; a
+		// bundle waits for its own container.
+		if !known || live[e.Name()] || (strings.HasPrefix(e.Name(), orphanPrefix+"run-") && len(live) > 0) {
+			kept++
+			continue
+		}
 		if err := removeAllForce(p); err != nil {
 			errs = append(errs, fmt.Errorf("sandbox: sweep: remove %s: %w", p, err))
 		}
 	}
+	if kept > 0 {
+		why := "runsc still lists containers that may use them"
+		if !known {
+			why = "runsc could not be asked which containers are still running"
+		}
+		errs = append(errs, fmt.Errorf("sandbox: sweep: kept %d leftover directories for the next start: %s", kept, why))
+	}
 	return errors.Join(errs...)
 }
 
-// sweepContainers force-deletes kritolith-* containers in the state
-// root unless their bundle dir exists and is newer than before.
-func sweepContainers(runtime, workDir string, before time.Time) error {
+// sweepContainers force-deletes our containers in the state root
+// unless their bundle dir exists and is newer than before, then lists
+// again and returns the ones still there. live is nil when runsc list
+// failed, so which containers run is unknown.
+func sweepContainers(runtime, workDir string, before time.Time) (live map[string]bool, err error) {
 	g := runscGlobals{Root: filepath.Join(workDir, runscStateDir)}
-	b, err := control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "list", "--quiet"))
+	ids, err := listOurContainers(runtime, workDir, g)
 	if err != nil {
-		return fmt.Errorf("sandbox: sweep: runsc list: %w", err)
+		return nil, err
 	}
 	var errs []error
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
-		id := strings.TrimSpace(sc.Text())
-		if !isOrphanName(id) {
-			continue
-		}
+	tried := map[string]bool{}
+	for _, id := range ids {
 		if fi, err := os.Lstat(filepath.Join(workDir, id)); err == nil && fi.IsDir() && !fi.ModTime().Before(before) {
 			continue
 		}
+		tried[id] = true
 		_, _ = control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "kill", id, "KILL"))
 		if _, err := control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "delete", "--force", id)); err != nil {
 			errs = append(errs, fmt.Errorf("sandbox: sweep: delete %s: %w", id, err))
 		}
 	}
-	return errors.Join(errs...)
+	ids, err = listOurContainers(runtime, workDir, g)
+	if err != nil {
+		return nil, errors.Join(append(errs, err)...)
+	}
+	live = map[string]bool{}
+	survivors := 0
+	for _, id := range ids {
+		live[id] = true
+		if tried[id] {
+			survivors++
+		}
+	}
+	if survivors > 0 {
+		errs = append(errs, fmt.Errorf("sandbox: sweep: %d deleted containers are still listed", survivors))
+	}
+	return live, errors.Join(errs...)
+}
+
+// listOurContainers returns the container ids runsc lists that have
+// the shape of ours.
+func listOurContainers(runtime, workDir string, g runscGlobals) ([]string, error) {
+	b, err := control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "list", "--quiet"))
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: sweep: runsc list: %w", err)
+	}
+	var ids []string
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	for sc.Scan() {
+		if id := strings.TrimSpace(sc.Text()); isOrphanName(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // mentionsID reports whether name holds id as a whole token: the id is

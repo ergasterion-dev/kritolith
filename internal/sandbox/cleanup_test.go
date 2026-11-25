@@ -148,7 +148,8 @@ func TestSweepOrphansRemovesReadOnlyTrees(t *testing.T) {
 	if err := os.Chtimes(p, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepOrphans(filepath.Join(realTempDir(t), "no-runsc"), workDir, time.Now()); err != nil {
+	f := newFakeRunsc(t, `:`, ``)
+	if err := sweepOrphans(f.path, workDir, time.Now()); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 	if _, err := os.Lstat(p); !os.IsNotExist(err) {
@@ -175,4 +176,79 @@ func TestRunnerRefusesProxyList(t *testing.T) {
 	if err := checkProxy("https://proxy.golang.org"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A writer that swaps a directory for a symlink to a host path between
+// the cleanup's check and its chmod must not get the host path
+// chmodded. The hook runs at exactly that point; the fast RemoveAll is
+// made to fail so the chmod fallback runs.
+func TestRemoveAllForceSymlinkSwap(t *testing.T) {
+	outside := outsideDir(t)
+	base := realTempDir(t)
+	root := filepath.Join(base, "kritolith-run-1")
+	victim := filepath.Join(root, "d")
+	if err := os.MkdirAll(filepath.Join(victim, "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(victim, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(root, "d-moved") // same parent: renaming a 0500 dir elsewhere needs write on it
+	swapped := false
+	oldFast, oldHook := fastRemoveAll, beforeForceChmod
+	t.Cleanup(func() {
+		fastRemoveAll, beforeForceChmod = oldFast, oldHook
+		_ = os.Chmod(moved, 0o700)
+	})
+	fastRemoveAll = func(string) error { return errors.New("busy") }
+	beforeForceChmod = func(p string) {
+		if p != victim || swapped {
+			return
+		}
+		swapped = true
+		if err := os.Rename(victim, moved); err != nil {
+			t.Errorf("swap: %v", err)
+		}
+		if err := os.Symlink(outside, victim); err != nil {
+			t.Errorf("swap: %v", err)
+		}
+	}
+	_ = removeAllForce(root)
+	if !swapped {
+		t.Fatal("the hook never ran for the 0500 directory")
+	}
+	assertOutsideUntouched(t, outside)
+	if fi, err := os.Lstat(victim); err == nil && fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("victim is not the planted link: %v", fi.Mode())
+	}
+	// With the swap gone, the next call removes the rest.
+	fastRemoveAll = os.RemoveAll
+	if err := removeAllForce(root); err != nil {
+		t.Fatal(err)
+	}
+	assertOutsideUntouched(t, outside)
+}
+
+// The fallback alone (fast path failing) still removes a read-only tree
+// and never follows the link out of it.
+func TestRemoveAllForceFallback(t *testing.T) {
+	outside := outsideDir(t)
+	root := filepath.Join(realTempDir(t), "kritolith-run-2")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	readOnlyTree(t, root, outside)
+	if err := os.Chmod(root, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	old := fastRemoveAll
+	t.Cleanup(func() { fastRemoveAll = old })
+	fastRemoveAll = func(string) error { return errors.New("busy") }
+	if err := removeAllForce(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("root still there: %v", err)
+	}
+	assertOutsideUntouched(t, outside)
 }

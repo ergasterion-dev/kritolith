@@ -517,7 +517,8 @@ func TestSweepOrphans(t *testing.T) {
 	old := now.Add(-2 * time.Hour)
 	cutoff := now.Add(-time.Hour)
 
-	f := newFakeRunsc(t, `:`, `printf 'kritolith-9001\nother-1\nkritolith-2002\nkritolith-backup\n'`)
+	// list reports every container not yet deleted.
+	f := newFakeRunsc(t, `:`, `for id in kritolith-9001 other-1 kritolith-2002 kritolith-backup; do grep -q -- "delete --force $id\$" "$D/calls.log" || echo "$id"; done`)
 	workDir := claimedWorkDir(t)
 	outside := realTempDir(t)
 	mk := func(name string, mtime time.Time) string {
@@ -555,13 +556,15 @@ func TestSweepOrphans(t *testing.T) {
 
 	// A symlink's own mtime cannot be set with the standard library, so
 	// a cutoff in the future makes the link "old" for the second pass.
-	if err := sweepOrphans(f.path, workDir, cutoff); err != nil {
-		t.Fatal(err)
+	if err := sweepOrphans(f.path, workDir, cutoff); err == nil || !strings.Contains(err.Error(), "kept 1 leftover") {
+		t.Fatalf("err = %v, want the kept scratch tree reported", err)
 	}
 	exists := func(p string) bool { _, err := os.Lstat(p); return err == nil }
 	for p, want := range map[string]bool{
-		filepath.Join(workDir, "kritolith-1001"):     false,
-		filepath.Join(workDir, "kritolith-run-1003"): false,
+		filepath.Join(workDir, "kritolith-1001"): false,
+		// kritolith-2002 is still listed (its bundle is new), so no
+		// scratch tree is removed while it may still use one.
+		filepath.Join(workDir, "kritolith-run-1003"): true,
 		filepath.Join(workDir, "kritolith-backup"):   true,
 		filepath.Join(workDir, "kritolith-2002"):     true,
 		filepath.Join(workDir, "other-old"):          true,
@@ -588,8 +591,8 @@ func TestSweepOrphans(t *testing.T) {
 	if !exists(victim) || !exists(filepath.Join(workDir, "kritolith-6006")) {
 		t.Fatal("sweep followed or removed a symlink")
 	}
-	if exists(filepath.Join(workDir, "kritolith-2002")) {
-		t.Fatal("stale dir kept after the cutoff passed it")
+	if exists(filepath.Join(workDir, "kritolith-2002")) || exists(filepath.Join(workDir, "kritolith-run-1003")) {
+		t.Fatal("stale dir kept after the cutoff passed it and its container was deleted")
 	}
 }
 
@@ -608,9 +611,69 @@ func TestSweepOrphansToleratesListFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("list failure not reported")
 	}
-	if _, serr := os.Lstat(p); serr == nil {
-		t.Fatal("stale dir kept when runsc list failed")
+	// With the container state unknown, a container may still be
+	// writing into the tree: it is left for the next start.
+	if _, serr := os.Lstat(p); serr != nil {
+		t.Fatal("stale dir removed although runsc list failed")
 	}
+}
+
+// The sweep leaves a bundle or scratch tree alone while a container
+// that may use it could still be running: its delete failed, it is
+// still listed, or runsc is not there to ask.
+func TestSweepOrphansKeepsTreesOfLiveContainers(t *testing.T) {
+	old := time.Now().Add(-time.Hour)
+	setup := func(t *testing.T) (string, map[string]string) {
+		workDir := claimedWorkDir(t)
+		ps := map[string]string{}
+		for _, n := range []string{"kritolith-1001", "kritolith-run-1002", "kritolith-1003"} {
+			p := filepath.Join(workDir, n)
+			if err := os.Mkdir(p, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(p, old, old); err != nil {
+				t.Fatal(err)
+			}
+			ps[n] = p
+		}
+		return workDir, ps
+	}
+	exists := func(p string) bool { _, err := os.Lstat(p); return err == nil }
+	t.Run("delete fails", func(t *testing.T) {
+		f := newFakeRunsc(t, `:`, `echo kritolith-1001`)
+		f.toggle(t, "fail-delete", true)
+		workDir, ps := setup(t)
+		if err := sweepOrphans(f.path, workDir, time.Now()); err == nil {
+			t.Fatal("failed delete not reported")
+		}
+		if !exists(ps["kritolith-1001"]) || !exists(ps["kritolith-run-1002"]) {
+			t.Fatal("removed the tree of a container that could not be deleted")
+		}
+		if exists(ps["kritolith-1003"]) {
+			t.Fatal("bundle of no container kept")
+		}
+	})
+	t.Run("still listed after delete", func(t *testing.T) {
+		f := newFakeRunsc(t, `:`, `echo kritolith-1001`)
+		workDir, ps := setup(t)
+		if err := sweepOrphans(f.path, workDir, time.Now()); err == nil {
+			t.Fatal("surviving container not reported")
+		}
+		if !exists(ps["kritolith-1001"]) || !exists(ps["kritolith-run-1002"]) {
+			t.Fatal("removed the tree of a container that is still listed")
+		}
+	})
+	t.Run("runtime missing", func(t *testing.T) {
+		workDir, ps := setup(t)
+		if err := sweepOrphans(filepath.Join(t.TempDir(), "no-runsc"), workDir, time.Now()); err == nil {
+			t.Fatal("kept leftovers not reported")
+		}
+		for n, p := range ps {
+			if !exists(p) {
+				t.Fatalf("%s removed without asking runsc which containers live", n)
+			}
+		}
+	})
 }
 
 func TestSweepOrphansMissingRuntime(t *testing.T) {
