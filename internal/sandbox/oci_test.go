@@ -11,8 +11,8 @@ func goodSpec() ContainerSpec {
 		Rootfs: "/srv/kritolith/rootfs", Args: []string{"/usr/local/go/bin/go", "test"},
 		Env: []string{"GOFLAGS=-mod=mod", "HOME=/tmp"}, Cwd: "/work",
 		Mounts: []Mount{
-			{Source: "/srv/kritolith/src", Dest: "/work", ReadOnly: true},
-			{Dest: "/tmp", Tmpfs: true, SizeMB: 64},
+			{Source: "/srv/kritolith/src", Dest: "/work"},
+			{Dest: "/tmp", Tmpfs: true, Writable: true, SizeMB: 64},
 		},
 		MemoryMB: 512, CPUs: 2, PIDs: 128, CPUSeconds: 60, FileSizeKB: 1024,
 		UID: 1000, GID: 1000, Forbidden: []string{"/srv/kritolith/data"},
@@ -162,5 +162,51 @@ func TestBuildOCIPrefixBoundary(t *testing.T) {
 	s.Mounts[0].Source = "/srv/kritolith/data-other/x" // sibling, not under the forbidden prefix
 	if _, err := BuildOCI(s); err != nil {
 		t.Fatalf("sibling of forbidden prefix wrongly rejected: %v", err)
+	}
+}
+
+func TestBuildOCIAllowedEdges(t *testing.T) {
+	cases := map[string]func(*ContainerSpec){
+		"etcetera sibling": func(s *ContainerSpec) { s.Mounts[0].Source = "/etcetera" },
+		"max limits": func(s *ContainerSpec) {
+			s.MemoryMB, s.CPUs, s.PIDs, s.CPUSeconds, s.FileSizeKB = 1<<20, 1024, 1<<20, 86400, 1<<30
+		},
+		"writable scratch":  func(s *ContainerSpec) { s.Mounts[0].Writable = true; s.Mounts[0].Source = "/srv/kritolith/scratch" },
+		"sibling dest name": func(s *ContainerSpec) { s.Mounts[1].Dest = "/work2" },
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := goodSpec()
+			mut(&s)
+			if _, err := BuildOCI(s); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestBuildOCIReadOnlyByDefault(t *testing.T) {
+	b, err := BuildOCI(goodSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o ociConfig
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range o.Mounts {
+		if m.Destination == "/work" && !strings.Contains(strings.Join(m.Options, ","), "ro") {
+			t.Fatalf("bind not read-only: %+v", m)
+		}
+	}
+}
+
+func TestBuildOCINetworkFlagDoesNotChangeConfig(t *testing.T) {
+	a, b := goodSpec(), goodSpec()
+	b.Network = true
+	x, err1 := BuildOCI(a)
+	y, err2 := BuildOCI(b)
+	if err1 != nil || err2 != nil || string(x) != string(y) {
+		t.Fatal("config differs with Network flag")
 	}
 }

@@ -9,11 +9,15 @@ import (
 )
 
 // Mount is one extra mount inside the container. A Tmpfs mount has no
-// host source and needs SizeMB; any other mount binds Source from the
-// host at Dest.
+// host source, needs SizeMB and must be Writable; any other mount binds
+// Source from the host at Dest, read-only unless Writable is set (a
+// writable bind may not lie in or contain the rootfs).
+//
+// Callers must EvalSymlinks every Source and the Rootfs before BuildOCI
+// and re-check the result: this function is pure and cannot see links.
 type Mount struct {
 	Source, Dest string
-	ReadOnly     bool
+	Writable     bool
 	SizeMB       int
 	Tmpfs        bool
 }
@@ -49,6 +53,12 @@ const (
 	ociVersion = "1.0.2"
 	cpuPeriod  = 100000
 	noFileMax  = 1024
+
+	maxMemoryMB   = 1 << 20
+	maxCPUs       = 1024
+	maxPIDs       = 1 << 20
+	maxCPUSeconds = 86400
+	maxFileSizeKB = 1 << 30
 )
 
 // OCI runtime-spec v1 config.json, only the fields we set.
@@ -167,23 +177,33 @@ func hasDotDot(p string) bool {
 	return false
 }
 
+// checkSource validates a host path (mount source or rootfs). It
+// rejects paths equal to, under, or containing (an ancestor of) any
+// denied or forbidden prefix, so "/" and "/var" are refused too.
 func checkSource(src string, forbidden []string) error {
 	if src == "" || strings.ContainsRune(src, 0) {
-		return errors.New("empty or malformed mount source")
+		return errors.New("empty or malformed host path")
 	}
 	if !strings.HasPrefix(src, "/") {
-		return fmt.Errorf("mount source %q is not absolute", src)
+		return fmt.Errorf("host path %q is not absolute", src)
 	}
 	if hasDotDot(src) {
-		return fmt.Errorf("mount source %q contains ..", src)
+		return fmt.Errorf("host path %q contains ..", src)
 	}
 	c := filepath.Clean(src)
-	if underAny(c, builtinDeny) || underAny(c, forbidden) {
-		return fmt.Errorf("mount source %q is under a forbidden path", src)
+	if c == "/" {
+		return errors.New("host path / is not allowed")
+	}
+	for _, list := range [][]string{builtinDeny, forbidden} {
+		for _, pre := range list {
+			if under(c, pre) || under(pre, c) {
+				return fmt.Errorf("host path %q overlaps forbidden path %q", src, pre)
+			}
+		}
 	}
 	for _, e := range strings.Split(c, "/") {
 		if e == "docker.sock" {
-			return fmt.Errorf("mount source %q is a docker socket", src)
+			return fmt.Errorf("host path %q is a docker socket", src)
 		}
 	}
 	return nil
@@ -200,28 +220,35 @@ func checkDest(dest string) error {
 }
 
 func validate(s ContainerSpec) ([]string, error) {
-	if !strings.HasPrefix(s.Rootfs, "/") || strings.ContainsRune(s.Rootfs, 0) {
-		return nil, errors.New("rootfs must be an absolute path")
-	}
 	if len(s.Args) == 0 {
 		return nil, errors.New("no command")
 	}
-	if !strings.HasPrefix(s.Cwd, "/") {
-		return nil, errors.New("cwd must be absolute")
+	if !strings.HasPrefix(s.Cwd, "/") || hasDotDot(s.Cwd) || filepath.Clean(s.Cwd) != s.Cwd {
+		return nil, errors.New("cwd must be absolute and clean")
+	}
+	for _, a := range s.Args {
+		if strings.ContainsRune(a, 0) {
+			return nil, errors.New("NUL in argument")
+		}
 	}
 	for _, e := range s.Env {
-		if i := strings.IndexByte(e, '='); i < 1 {
+		if i := strings.IndexByte(e, '='); i < 1 || strings.ContainsRune(e, 0) {
 			return nil, fmt.Errorf("malformed environment entry %q", e)
 		}
 	}
-	for name, v := range map[string]int{"MemoryMB": s.MemoryMB, "CPUs": s.CPUs, "PIDs": s.PIDs,
-		"CPUSeconds": s.CPUSeconds, "FileSizeKB": s.FileSizeKB} {
-		if v <= 0 {
-			return nil, fmt.Errorf("%s must be positive: a container without limits is a bug", name)
+	for _, l := range []struct {
+		name   string
+		v, max int
+	}{
+		{"MemoryMB", s.MemoryMB, maxMemoryMB}, {"CPUs", s.CPUs, maxCPUs}, {"PIDs", s.PIDs, maxPIDs},
+		{"CPUSeconds", s.CPUSeconds, maxCPUSeconds}, {"FileSizeKB", s.FileSizeKB, maxFileSizeKB},
+	} {
+		if l.v <= 0 || l.v > l.max {
+			return nil, fmt.Errorf("%s must be in 1..%d: a container without limits is a bug", l.name, l.max)
 		}
 	}
-	if s.UID <= 0 || s.GID < 0 {
-		return nil, errors.New("container must run as an unprivileged user (uid > 0, gid >= 0)")
+	if s.UID <= 0 || s.GID <= 0 {
+		return nil, errors.New("container must run as an unprivileged user (uid > 0, gid > 0)")
 	}
 	forbidden := make([]string, 0, len(s.Forbidden))
 	for _, f := range s.Forbidden {
@@ -229,6 +256,9 @@ func validate(s ContainerSpec) ([]string, error) {
 			return nil, fmt.Errorf("forbidden prefix %q must be absolute without ..", f)
 		}
 		forbidden = append(forbidden, filepath.Clean(f))
+	}
+	if err := checkSource(s.Rootfs, forbidden); err != nil {
+		return nil, fmt.Errorf("rootfs: %w", err)
 	}
 	return forbidden, nil
 }
@@ -244,12 +274,23 @@ func BuildOCI(s ContainerSpec) ([]byte, error) {
 		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
 		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "noexec", "mode=755", "size=64k"}},
 	}
+	rootfs := filepath.Clean(s.Rootfs)
+	dests := []string{}
 	for _, m := range s.Mounts {
 		if err := checkDest(m.Dest); err != nil {
 			return nil, err
 		}
+		for _, d := range dests {
+			if under(m.Dest, d) || under(d, m.Dest) {
+				return nil, fmt.Errorf("mount destination %q overlaps %q", m.Dest, d)
+			}
+		}
+		dests = append(dests, m.Dest)
 		if m.Tmpfs {
-			if m.SizeMB <= 0 {
+			if !m.Writable {
+				return nil, fmt.Errorf("tmpfs mount %q must be writable", m.Dest)
+			}
+			if m.SizeMB <= 0 || m.SizeMB > maxMemoryMB {
 				return nil, fmt.Errorf("tmpfs mount %q needs a positive size", m.Dest)
 			}
 			mounts = append(mounts, ociMount{Destination: m.Dest, Type: "tmpfs", Source: "tmpfs",
@@ -259,11 +300,12 @@ func BuildOCI(s ContainerSpec) ([]byte, error) {
 		if err := checkSource(m.Source, forbidden); err != nil {
 			return nil, err
 		}
-		opts := []string{"rbind", "nosuid", "nodev"}
-		if m.ReadOnly {
-			opts = append(opts, "ro")
-		} else {
-			opts = append(opts, "rw")
+		opts := []string{"rbind", "nosuid", "nodev", "ro"}
+		if m.Writable {
+			if under(filepath.Clean(m.Source), rootfs) || under(rootfs, filepath.Clean(m.Source)) {
+				return nil, fmt.Errorf("writable mount %q overlaps the rootfs", m.Source)
+			}
+			opts[3] = "rw"
 		}
 		mounts = append(mounts, ociMount{Destination: m.Dest, Type: "bind", Source: filepath.Clean(m.Source), Options: opts})
 	}
@@ -281,6 +323,7 @@ func BuildOCI(s ContainerSpec) ([]byte, error) {
 				rl("RLIMIT_CPU", uint64(s.CPUSeconds)),
 				rl("RLIMIT_FSIZE", uint64(s.FileSizeKB)*1024),
 				rl("RLIMIT_NOFILE", noFileMax),
+				// RLIMIT_NPROC counts per UID, not per container; fine under gVisor.
 				rl("RLIMIT_NPROC", uint64(s.PIDs)),
 			},
 			NoNewPrivileges: true,
