@@ -33,7 +33,12 @@ import (
 //     itself, which a contained `exit 128` cannot be told from.
 //   - OOM: find whether runsc (`runsc events`, state, or wait status)
 //     says a container was OOM-killed; until then OOM is never set.
-//   - kill/delete flags marked UNVERIFIED below.
+//   - sandbox and gofer processes are gone after a wall-clock kill (they
+//     run in their own session, so the process-group kill misses them;
+//     `runsc kill` and `delete --force` must reach them).
+//   - delete --force on a running container removes its sandbox and
+//     gofer processes and its state under --root.
+//   - kill/delete/list flags marked UNVERIFIED below.
 
 // processStart is when this process started; SweepOrphans removes
 // only what is older. It is written once, at init, and never changed.
@@ -45,15 +50,20 @@ const (
 	runscPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	// runscStateDir, under workDir, is runsc's --root (container state).
 	runscStateDir = "runsc-state"
+	// lockFile, under workDir, is flocked by the live driver.
+	lockFile = ".lock"
 	// orphanPrefix names every container and bundle dir this tool owns.
 	orphanPrefix = "kritolith-"
 
-	cleanupTimeout = 30 * time.Second
+	// defaultCleanupTimeout bounds each runsc kill/delete/list call.
+	defaultCleanupTimeout = 30 * time.Second
 	// waitDelay bounds how long Wait keeps the output pipes open after
 	// runsc exits, in case a process outside its group still holds them.
 	waitDelay      = 5 * time.Second
 	controlOutCap  = 1 << 20
 	maxRunsTimeout = 24 * time.Hour
+	// maxOutputLimit is the largest OutputLimit a RunSpec may ask for.
+	maxOutputLimit = 64 << 20
 )
 
 // runscGlobals are the global flags given to every runsc invocation.
@@ -65,20 +75,22 @@ type runscGlobals struct {
 
 // runscArgs builds a runsc command line. It is pure.
 //
-// Verified flags (gVisor docs and source, read 2026-11-25):
+// Flags, checked against the gVisor source and docs read 2026-11-25:
 //   - --root=<dir>: state directory; default $XDG_RUNTIME_DIR/runsc or
 //     /var/run/runsc, so it is always given explicitly.
 //     https://github.com/google/gvisor/blob/master/runsc/config/flags.go
 //   - --network=none|sandbox|host (default sandbox). We use none, or
 //     sandbox (gVisor's own netstack) for the fetch phase; never host.
-//     Also verified on a real host: --network=none (release-20261102.0).
 //     https://github.com/google/gvisor/blob/master/runsc/config/flags.go
 //   - --platform=systrap (default systrap; also ptrace, kvm, auto).
-//     Verified on a real host (release-20261102.0).
 //     https://github.com/google/gvisor/blob/master/runsc/config/flags.go
 //   - --ignore-cgroups ("don't configure cgroups"), only when the
 //     operator's setup cannot use cgroups (driver.ignoreCgroups).
-//     Verified on a real host (release-20261102.0).
+//     https://github.com/google/gvisor/blob/master/runsc/config/flags.go
+//   - --network=none, --platform=systrap and --ignore-cgroups were run on
+//     a real host on 2026-11-11 (gVisor release-20261102.0, privileged
+//     container on Docker Desktop), per the handoff; not re-verified in
+//     this session (runsc is not installed here).
 //   - run [--bundle=<dir>] <id>: --bundle comes from create's flags,
 //     default the current directory, so it is always given. runsc exits
 //     with the container's status, or 128+signal if it was signalled,
@@ -147,17 +159,32 @@ func (w *capWriter) result() ([]byte, bool) {
 	return append([]byte(nil), w.buf...), w.truncated
 }
 
-// runscDriver runs containers with gVisor's runsc.
+// runscDriver runs containers with gVisor's runsc. It holds an
+// exclusive lock on its work dir until Close.
+//
+// For the wiring in Tasks 7 and 9: ContainerSpec.Network must be set
+// only by the fetch phase, and workDir must neither equal nor contain
+// the data directory (database, keys).
 type runscDriver struct {
 	runtime string // absolute path
-	workDir string // absolute; holds bundles and the state root
+	workDir string // absolute; holds bundles, the state root and the lock
 	// ignoreCgroups passes --ignore-cgroups, for hosts where runsc
 	// cannot configure cgroups. Set by the runner from its config.
 	ignoreCgroups bool
+	// cleanupTimeout bounds each kill/delete call.
+	cleanupTimeout time.Duration
+
+	mu   sync.Mutex
+	lock *os.File
+	// pending holds containers whose delete --force failed; they are
+	// retried at the start of each Run and by Close.
+	pending map[string]runscGlobals
 }
 
-// newRunscDriver resolves runtime on PATH and prepares workDir (0700)
-// with runsc's state root inside it.
+// newRunscDriver resolves runtime on PATH, prepares workDir and runsc's
+// state root inside it (both 0700, owned by this user, never a
+// symlink), and locks workDir against a second live driver. Call Close
+// when done.
 func newRunscDriver(runtime, workDir string) (*runscDriver, error) {
 	rt, err := exec.LookPath(runtime)
 	if err != nil {
@@ -166,19 +193,105 @@ func newRunscDriver(runtime, workDir string) (*runscDriver, error) {
 	if rt, err = filepath.Abs(rt); err != nil {
 		return nil, fmt.Errorf("sandbox: runtime path: %w", err)
 	}
-	if !filepath.IsAbs(workDir) || hasDotDot(workDir) {
-		return nil, fmt.Errorf("sandbox: work dir %q must be absolute without ..", workDir)
+	workDir, err = cleanWorkDir(workDir)
+	if err != nil {
+		return nil, err
 	}
-	workDir = filepath.Clean(workDir)
 	for _, p := range []string{workDir, filepath.Join(workDir, runscStateDir)} {
-		if err := os.MkdirAll(p, 0o700); err != nil {
-			return nil, fmt.Errorf("sandbox: create %s: %w", p, err)
-		}
-		if err := os.Chmod(p, 0o700); err != nil {
-			return nil, fmt.Errorf("sandbox: chmod %s: %w", p, err)
+		if err := ensurePrivateDir(p); err != nil {
+			return nil, err
 		}
 	}
-	return &runscDriver{runtime: rt, workDir: workDir}, nil
+	lock, err := lockWorkDir(workDir)
+	if err != nil {
+		return nil, err
+	}
+	return &runscDriver{runtime: rt, workDir: workDir, cleanupTimeout: defaultCleanupTimeout,
+		lock: lock, pending: map[string]runscGlobals{}}, nil
+}
+
+// cleanWorkDir requires an absolute path without .. and at least two
+// components, so "/" or "/tmp" is never used as the work dir.
+func cleanWorkDir(workDir string) (string, error) {
+	if !filepath.IsAbs(workDir) || hasDotDot(workDir) || strings.ContainsRune(workDir, 0) {
+		return "", fmt.Errorf("sandbox: work dir %q must be absolute without ..", workDir)
+	}
+	c := filepath.Clean(workDir)
+	if strings.Count(c, "/") < 2 {
+		return "", fmt.Errorf("sandbox: work dir %q is too close to /", workDir)
+	}
+	return c, nil
+}
+
+// ensurePrivateDir creates p 0700 if it is missing, then checks it.
+func ensurePrivateDir(p string) error {
+	if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			return fmt.Errorf("sandbox: create %s: %w", p, err)
+		}
+	}
+	return checkPrivateDir(p)
+}
+
+// checkPrivateDir refuses a path that is a symlink or not a directory,
+// is owned by another user, or is group or world writable: anyone who
+// can write there could rewrite a bundle's config.json before runsc
+// reads it. It never changes the directory.
+func checkPrivateDir(p string) error {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("sandbox: %s is a symlink", p)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("sandbox: %s is not a directory", p)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != os.Geteuid() {
+		return fmt.Errorf("sandbox: %s is not owned by this user", p)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("sandbox: %s is group or world writable (%v)", p, fi.Mode().Perm())
+	}
+	return nil
+}
+
+// lockWorkDir takes an exclusive, non-blocking flock on workDir/.lock.
+func lockWorkDir(workDir string) (*os.File, error) {
+	p := filepath.Join(workDir, lockFile)
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: open %s: %w", p, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("sandbox: work dir %s is in use by another kritolith sandbox driver", workDir)
+		}
+		return nil, fmt.Errorf("sandbox: lock %s: %w", p, err)
+	}
+	return f, nil
+}
+
+func unlockWorkDir(f *os.File) {
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+}
+
+// Close retries the deletion of containers whose delete --force failed,
+// then releases the work dir lock. It returns the containers it still
+// could not delete; those are left for SweepOrphans at the next start.
+func (d *runscDriver) Close() error {
+	err := d.retryPending()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lock != nil {
+		unlockWorkDir(d.lock)
+		d.lock = nil
+	}
+	return err
 }
 
 func (d *runscDriver) globals(network bool) runscGlobals {
@@ -190,8 +303,8 @@ func (d *runscDriver) Run(ctx context.Context, s RunSpec) (out RunOutput, err er
 	if s.Timeout <= 0 || s.Timeout > maxRunsTimeout {
 		return RunOutput{}, fmt.Errorf("sandbox: timeout %v out of range", s.Timeout)
 	}
-	if s.OutputLimit <= 0 {
-		return RunOutput{}, errors.New("sandbox: output limit must be positive")
+	if s.OutputLimit <= 0 || s.OutputLimit > maxOutputLimit {
+		return RunOutput{}, fmt.Errorf("sandbox: output limit must be in 1..%d", maxOutputLimit)
 	}
 	spec, err := resolveSpec(s.Container)
 	if err != nil {
@@ -204,6 +317,9 @@ func (d *runscDriver) Run(ctx context.Context, s RunSpec) (out RunOutput, err er
 	if err := ctx.Err(); err != nil {
 		return RunOutput{}, fmt.Errorf("sandbox: %w", err)
 	}
+	// Containers an earlier run could not delete are retried first;
+	// whatever still fails stays pending and is reported by Close.
+	_ = d.retryPending()
 
 	// MkdirTemp creates the dir 0700 with a random suffix; its name is
 	// also the container id, which ties a container to its bundle for
@@ -213,8 +329,8 @@ func (d *runscDriver) Run(ctx context.Context, s RunSpec) (out RunOutput, err er
 		return RunOutput{}, fmt.Errorf("sandbox: create bundle: %w", err)
 	}
 	defer func() {
-		if rerr := os.RemoveAll(bundle); rerr != nil && err == nil {
-			err = fmt.Errorf("sandbox: remove bundle: %w", rerr)
+		if rerr := os.RemoveAll(bundle); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("sandbox: remove bundle: %w", rerr))
 		}
 	}()
 	id := filepath.Base(bundle)
@@ -232,34 +348,49 @@ func (d *runscDriver) Run(ctx context.Context, s RunSpec) (out RunOutput, err er
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
+	var killErr error
+	stop := func() {
+		killGroup(cmd)
+		killErr = d.killContainer(g, id)
+	}
 	finished := false
-	// On every exit path after Start, including a panic: kill the runsc
-	// process group if it is still running, wait for it, then remove the
-	// container. Deferred calls run in reverse, so this runs before the
-	// bundle is removed.
+	// On every exit path after Start, including a panic: stop runsc if
+	// it is still running and wait for it, then force-delete the
+	// container. A failed cleanup is an error: the container may still be
+	// running hostile code. Deferred calls run in reverse, so this runs
+	// before the bundle is removed.
 	defer func() {
 		if !finished {
-			killGroup(cmd)
-			d.kill(g, id)
+			stop()
 			<-done
 		}
-		d.remove(g, id)
+		if cerr := d.removeContainer(g, id, killErr); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
 	}()
 
 	timer := time.NewTimer(s.Timeout)
 	defer timer.Stop()
 	var waitErr, ctxErr error
+	exited := false
 	select {
 	case waitErr = <-done:
+		exited = true
 	case <-timer.C:
 		out.TimedOut = true
 	case <-ctx.Done():
 		ctxErr = ctx.Err()
 	}
-	if out.TimedOut || ctxErr != nil {
-		killGroup(cmd)
-		d.kill(g, id)
-		waitErr = <-done
+	if !exited {
+		// A run that finished as the clock fired is not a timeout, and its
+		// reaped pid must not be signalled.
+		select {
+		case waitErr = <-done:
+			out.TimedOut, ctxErr = false, nil
+		default:
+			stop()
+			waitErr = <-done
+		}
 	}
 	finished = true
 
@@ -271,14 +402,27 @@ func (d *runscDriver) Run(ctx context.Context, s RunSpec) (out RunOutput, err er
 	// and guessing would turn a hostile `kill -9 $$` into a resource
 	// fact. TODO(task10) above tracks finding a real OOM signal.
 	out.ExitCode = cmd.ProcessState.ExitCode()
+	return out, runError(waitErr, ctxErr)
+}
+
+// runError turns how a run ended into the driver's error: a container
+// exit status (or pipes closed late after a clean exit) is a result,
+// not an error; a cancelled ctx always is, joined with any wait failure
+// so errors.Is still finds context.Canceled.
+func runError(waitErr, ctxErr error) error {
 	var ee *exec.ExitError
-	if waitErr != nil && !errors.As(waitErr, &ee) && !errors.Is(waitErr, exec.ErrWaitDelay) {
-		return out, fmt.Errorf("sandbox: wait for runsc: %w", waitErr)
+	if errors.As(waitErr, &ee) || errors.Is(waitErr, exec.ErrWaitDelay) {
+		waitErr = nil
 	}
-	if ctxErr != nil {
-		return out, fmt.Errorf("sandbox: run cancelled: %w", ctxErr)
+	switch {
+	case ctxErr != nil && waitErr != nil:
+		return fmt.Errorf("sandbox: run cancelled: %w", errors.Join(ctxErr, waitErr))
+	case ctxErr != nil:
+		return fmt.Errorf("sandbox: run cancelled: %w", ctxErr)
+	case waitErr != nil:
+		return fmt.Errorf("sandbox: wait for runsc: %w", waitErr)
 	}
-	return out, nil
+	return nil
 }
 
 // runscCommand builds a runsc invocation with no host environment
@@ -304,9 +448,10 @@ func killGroup(cmd *exec.Cmd) {
 
 // control runs a short runsc management command (kill, delete, list)
 // with its own timeout, independent of the caller's possibly cancelled
-// context, and returns its capped combined output.
-func control(runtime, dir string, args []string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+// context, and returns its capped combined output. A timeout returns
+// context.DeadlineExceeded.
+func control(runtime, dir string, timeout time.Duration, args []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := runscCommand(runtime, args, dir)
 	w := &capWriter{limit: controlOutCap}
@@ -328,18 +473,55 @@ func control(runtime, dir string, args []string) ([]byte, error) {
 	return b, err
 }
 
-// kill sends SIGKILL to the container. Failure is expected when the
-// container already exited or was never created; remove follows anyway.
-func (d *runscDriver) kill(g runscGlobals, id string) {
-	_, _ = control(d.runtime, d.workDir, runscArgs(g, "kill", id, "KILL"))
+// killContainer sends SIGKILL to the container.
+func (d *runscDriver) killContainer(g runscGlobals, id string) error {
+	if _, err := control(d.runtime, d.workDir, d.cleanupTimeout, runscArgs(g, "kill", id, "KILL")); err != nil {
+		return fmt.Errorf("sandbox: runsc kill %s: %w", id, err)
+	}
+	return nil
 }
 
-// remove force-deletes the container. delete --force treats a missing
-// container as a warning, so this is safe after runsc run cleaned up.
-// A failure here leaves an orphan that SweepOrphans removes on the next
-// start; it does not change the run's result.
-func (d *runscDriver) remove(g runscGlobals, id string) {
-	_, _ = control(d.runtime, d.workDir, runscArgs(g, "delete", "--force", id))
+// removeContainer force-deletes the container and decides whether
+// cleanup failed. delete --force terminates a running container and
+// treats a missing one as a warning, so its success means the container
+// is gone. A failed kill is then only an error if it timed out (runsc
+// hung, so nothing it did can be trusted); otherwise it just means the
+// container had already exited. A failed delete is always an error and
+// the id is kept for retry.
+func (d *runscDriver) removeContainer(g runscGlobals, id string, killErr error) error {
+	_, err := control(d.runtime, d.workDir, d.cleanupTimeout, runscArgs(g, "delete", "--force", id))
+	if err != nil {
+		d.mu.Lock()
+		d.pending[id] = g
+		d.mu.Unlock()
+		return errors.Join(fmt.Errorf("sandbox: runsc delete --force %s: %w", id, err), killErr)
+	}
+	if errors.Is(killErr, context.DeadlineExceeded) {
+		return killErr
+	}
+	return nil
+}
+
+// retryPending retries delete --force for containers an earlier run
+// could not delete and returns those that still fail.
+func (d *runscDriver) retryPending() error {
+	d.mu.Lock()
+	ids := make(map[string]runscGlobals, len(d.pending))
+	for id, g := range d.pending {
+		ids[id] = g
+	}
+	d.mu.Unlock()
+	var errs []error
+	for id, g := range ids {
+		if _, err := control(d.runtime, d.workDir, d.cleanupTimeout, runscArgs(g, "delete", "--force", id)); err != nil {
+			errs = append(errs, fmt.Errorf("sandbox: runsc delete --force %s: %w", id, err))
+			continue
+		}
+		d.mu.Lock()
+		delete(d.pending, id)
+		d.mu.Unlock()
+	}
+	return errors.Join(errs...)
 }
 
 // resolveSpec returns a copy of c with the rootfs and every bind source
@@ -411,18 +593,36 @@ func evalBestEffort(p string) string {
 // behind in workDir: runsc containers named kritolith-* whose bundle
 // dir is gone or older than this process, and kritolith-* directories
 // directly in workDir older than this process. It never follows a
-// symlink and touches nothing else. It keeps going past failures and
-// returns them joined; the caller should log the error, not abort. A
-// runtime that cannot be found means there are no containers to sweep.
+// symlink and touches nothing else.
+//
+// Call it once at startup, before creating the driver for workDir: it
+// takes the work dir lock itself and refuses to run while a live driver
+// (in this or another process) holds it, and it refuses a work dir that
+// is a symlink, foreign-owned or group/world writable. Past that, it
+// keeps going through failures and returns them joined; the caller
+// should log the error, not abort. A missing workDir or a runtime that
+// cannot be found means there is nothing of that kind to sweep.
 func SweepOrphans(runtime, workDir string) error {
 	return sweepOrphans(runtime, workDir, processStart)
 }
 
 func sweepOrphans(runtime, workDir string, before time.Time) error {
-	if !filepath.IsAbs(workDir) {
-		return fmt.Errorf("sandbox: sweep: work dir %q is not absolute", workDir)
+	workDir, err := cleanWorkDir(workDir)
+	if err != nil {
+		return fmt.Errorf("sandbox: sweep: %w", err)
 	}
-	workDir = filepath.Clean(workDir)
+	if _, err := os.Lstat(workDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err := checkPrivateDir(workDir); err != nil {
+		return fmt.Errorf("sandbox: sweep: %w", err)
+	}
+	lock, err := lockWorkDir(workDir)
+	if err != nil {
+		return fmt.Errorf("sandbox: sweep: %w", err)
+	}
+	defer unlockWorkDir(lock)
+
 	var errs []error
 	if rt, err := exec.LookPath(runtime); err == nil {
 		if err := sweepContainers(rt, workDir, before); err != nil {
@@ -431,9 +631,6 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 	}
 	ents, err := os.ReadDir(workDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.Join(errs...)
-		}
 		return errors.Join(append(errs, fmt.Errorf("sandbox: sweep: read %s: %w", workDir, err))...)
 	}
 	for _, e := range ents {
@@ -462,11 +659,10 @@ func isOrphanName(n string) bool {
 }
 
 // sweepContainers force-deletes kritolith-* containers in the state
-// root unless their bundle dir exists and is newer than before (a run
-// of this process still using it).
+// root unless their bundle dir exists and is newer than before.
 func sweepContainers(runtime, workDir string, before time.Time) error {
 	g := runscGlobals{Root: filepath.Join(workDir, runscStateDir)}
-	b, err := control(runtime, workDir, runscArgs(g, "list", "--quiet"))
+	b, err := control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "list", "--quiet"))
 	if err != nil {
 		return fmt.Errorf("sandbox: sweep: runsc list: %w", err)
 	}
@@ -480,8 +676,8 @@ func sweepContainers(runtime, workDir string, before time.Time) error {
 		if fi, err := os.Lstat(filepath.Join(workDir, id)); err == nil && fi.IsDir() && !fi.ModTime().Before(before) {
 			continue
 		}
-		_, _ = control(runtime, workDir, runscArgs(g, "kill", id, "KILL"))
-		if _, err := control(runtime, workDir, runscArgs(g, "delete", "--force", id)); err != nil {
+		_, _ = control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "kill", id, "KILL"))
+		if _, err := control(runtime, workDir, defaultCleanupTimeout, runscArgs(g, "delete", "--force", id)); err != nil {
 			errs = append(errs, fmt.Errorf("sandbox: sweep: delete %s: %w", id, err))
 		}
 	}

@@ -19,7 +19,13 @@ type RunSpec struct {
 // RunOutput.ExitCode and is not an error. An error means the driver
 // could not run the container at all (bad spec, bundle creation
 // failed, runtime would not start) or the caller's ctx ended the run;
-// either way the result is inconclusive, never a rejection.
+// either way the result is inconclusive, never a rejection. Failing to
+// kill or delete the container afterwards is also an error, because it
+// may still be running.
+//
+// After a cancel or timeout, cleanup can take up to about 65s in the
+// worst case (runsc kill 30s, delete --force 30s, pipe drain 5s), so
+// callers should budget shutdown for that.
 type driver interface {
 	Run(ctx context.Context, s RunSpec) (RunOutput, error)
 }

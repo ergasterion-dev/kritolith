@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -17,7 +18,9 @@ import (
 // fakeRunsc writes a shell script standing in for runsc. Every call
 // appends its arguments to calls.log; the "run" subcommand records its
 // environment, copies the bundle's config.json, touches started, then
-// runs runBody; "list" runs listBody. The driver passes no environment,
+// runs runBody; "list" runs listBody. "kill" hangs while the file
+// hang-kill exists in the fake's dir and "delete" fails while
+// fail-delete exists. The driver passes no environment,
 // so everything the script needs is baked into it.
 type fakeRunsc struct {
 	dir, path string
@@ -48,6 +51,12 @@ case "$sub" in
     ;;
   list)
     ` + listBody + `
+    ;;
+  kill)
+    if [ -e "$D/hang-kill" ]; then sleep 5; fi
+    ;;
+  delete)
+    if [ -e "$D/fail-delete" ]; then echo "delete failed" >&2; exit 1; fi
     ;;
 esac
 exit 0
@@ -456,6 +465,7 @@ func TestRunscDriverRejectsBadRunSpec(t *testing.T) {
 		func(s *RunSpec) { s.Timeout = 0 },
 		func(s *RunSpec) { s.OutputLimit = 0 },
 		func(s *RunSpec) { s.Container.MemoryMB = 0 },
+		func(s *RunSpec) { s.OutputLimit = maxOutputLimit + 1 },
 	} {
 		s := testSpec(t)
 		mod(&s)
@@ -603,5 +613,287 @@ func TestSweepOrphansMissingRuntime(t *testing.T) {
 	workDir := t.TempDir()
 	if err := SweepOrphans(filepath.Join(t.TempDir(), "no-runsc"), workDir); err != nil {
 		t.Fatalf("missing runtime: %v", err)
+	}
+}
+
+func (f fakeRunsc) toggle(t *testing.T, name string, on bool) {
+	t.Helper()
+	p := filepath.Join(f.dir, name)
+	if on {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewRunscDriverWorkDirChecks(t *testing.T) {
+	f := newFakeRunsc(t, `:`, ``)
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) string
+		wantErr bool
+	}{
+		{"fresh dir is created 0700", func(t *testing.T) string {
+			return filepath.Join(t.TempDir(), "a", "work")
+		}, false},
+		{"existing private dir is accepted", func(t *testing.T) string {
+			return t.TempDir()
+		}, false},
+		{"root is refused", func(t *testing.T) string { return "/" }, true},
+		{"single component is refused", func(t *testing.T) string { return "/kritolith" }, true},
+		{"symlinked work dir is refused", func(t *testing.T) string {
+			p := filepath.Join(t.TempDir(), "link")
+			if err := os.Symlink(t.TempDir(), p); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, true},
+		{"group or world writable work dir is refused", func(t *testing.T) string {
+			p := filepath.Join(t.TempDir(), "open")
+			if err := os.Mkdir(p, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(p, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, true},
+		{"symlinked state dir is refused", func(t *testing.T) string {
+			p := t.TempDir()
+			if err := os.Symlink(t.TempDir(), filepath.Join(p, runscStateDir)); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, true},
+		{"writable state dir is refused", func(t *testing.T) string {
+			p := t.TempDir()
+			s := filepath.Join(p, runscStateDir)
+			if err := os.Mkdir(s, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(s, 0o770); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, true},
+		{"work dir that is a file is refused", func(t *testing.T) string {
+			p := filepath.Join(t.TempDir(), "file")
+			if err := os.WriteFile(p, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := tt.setup(t)
+			var before os.FileMode
+			if fi, err := os.Lstat(p); err == nil {
+				before = fi.Mode()
+			}
+			d, err := newRunscDriver(f.path, p)
+			if tt.wantErr {
+				if err == nil {
+					d.Close()
+					t.Fatal("accepted an unsafe work dir")
+				}
+				if fi, lerr := os.Lstat(p); lerr == nil && fi.Mode() != before {
+					t.Fatalf("refused dir was changed: %v -> %v", before, fi.Mode())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			// A dir the driver created is 0700; an existing one is left
+			// as it was, which the check allowed (no group/other write).
+			want := map[string]os.FileMode{p: before.Perm(), filepath.Join(p, runscStateDir): 0o700}
+			if before == 0 {
+				want[p] = 0o700
+			}
+			for q, perm := range want {
+				fi, err := os.Lstat(q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !fi.IsDir() || fi.Mode().Perm() != perm {
+					t.Fatalf("%s mode %v, want %v", q, fi.Mode(), perm)
+				}
+			}
+		})
+	}
+}
+
+func TestNewRunscDriverRefusesForeignOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to chown a dir to another user")
+	}
+	f := newFakeRunsc(t, `:`, ``)
+	p := filepath.Join(t.TempDir(), "foreign")
+	if err := os.Mkdir(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(p, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := newRunscDriver(f.path, p); err == nil {
+		d.Close()
+		t.Fatal("accepted a work dir owned by another user")
+	}
+}
+
+func TestRunscDriverLocksWorkDir(t *testing.T) {
+	f := newFakeRunsc(t, `:`, ``)
+	workDir := t.TempDir()
+	d, err := newRunscDriver(f.path, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d2, err := newRunscDriver(f.path, workDir); err == nil {
+		d2.Close()
+		t.Fatal("second driver on the same work dir was allowed")
+	} else if !strings.Contains(err.Error(), "in use") {
+		t.Fatalf("unclear error: %v", err)
+	}
+	if err := SweepOrphans(f.path, workDir); err == nil {
+		t.Fatal("sweep ran while a live driver holds the work dir")
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d3, err := newRunscDriver(f.path, workDir)
+	if err != nil {
+		t.Fatalf("work dir not released by Close: %v", err)
+	}
+	d3.Close()
+}
+
+func TestRunscDriverCleanupFailure(t *testing.T) {
+	f := newFakeRunsc(t, `echo out`, ``)
+	workDir := t.TempDir()
+	d, err := newRunscDriver(f.path, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// delete --force fails: the run is an error and the id is kept.
+	f.toggle(t, "fail-delete", true)
+	if _, err := d.Run(context.Background(), testSpec(t)); err == nil {
+		t.Fatal("a failed delete --force was reported as a clean run")
+	}
+	first := runID(t, f)
+	if _, ok := d.pending[first]; !ok {
+		t.Fatalf("failed container %s not remembered: %v", first, d.pending)
+	}
+	assertNoBundles(t, workDir)
+
+	// The next Run retries the deletion first.
+	f.toggle(t, "fail-delete", false)
+	if _, err := os.Stat(filepath.Join(f.dir, "calls.log")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.dir, "calls.log")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Run(context.Background(), testSpec(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(f.callsTo(t, "delete"), "\n"), "delete --force "+first) {
+		t.Fatalf("pending %s not retried: %q", first, f.calls(t))
+	}
+	if len(d.pending) != 0 {
+		t.Fatalf("pending not cleared: %v", d.pending)
+	}
+
+	// Close retries too, and reports what still cannot be deleted.
+	f.toggle(t, "fail-delete", true)
+	if _, err := d.Run(context.Background(), testSpec(t)); err == nil {
+		t.Fatal("a failed delete --force was reported as a clean run")
+	}
+	if err := d.Close(); err == nil {
+		t.Fatal("Close hid a container it could not delete")
+	}
+	f.toggle(t, "fail-delete", false)
+	d2, err := newRunscDriver(f.path, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2.Close()
+}
+
+func TestRunscDriverCloseRetriesPending(t *testing.T) {
+	f := newFakeRunsc(t, `:`, ``)
+	d, err := newRunscDriver(f.path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.toggle(t, "fail-delete", true)
+	if _, err := d.Run(context.Background(), testSpec(t)); err == nil {
+		t.Fatal("a failed delete --force was reported as a clean run")
+	}
+	id := runID(t, f)
+	f.toggle(t, "fail-delete", false)
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	dels := f.callsTo(t, "delete")
+	if !strings.HasSuffix(dels[len(dels)-1], "delete --force "+id) || len(d.pending) != 0 {
+		t.Fatalf("Close did not retry %s: %q", id, dels)
+	}
+}
+
+func TestRunscDriverKillTimeoutIsAnError(t *testing.T) {
+	f := newFakeRunsc(t, `sleep 30 & echo $! > "$D/child"; wait`, ``)
+	d, err := newRunscDriver(f.path, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.cleanupTimeout = 300 * time.Millisecond
+	f.toggle(t, "hang-kill", true)
+	s := testSpec(t)
+	s.Timeout = 2 * time.Second
+	out, err := d.Run(context.Background(), s)
+	if err == nil {
+		t.Fatal("a hung runsc kill was reported as a clean run")
+	}
+	if !out.TimedOut {
+		t.Fatalf("out = %+v", out)
+	}
+}
+
+func TestRunError(t *testing.T) {
+	ioErr := errors.New("copy failed")
+	tests := []struct {
+		name         string
+		waitErr, ctx error
+		wantNil      bool
+		wantIs       []error
+	}{
+		{"clean", nil, nil, true, nil},
+		{"container exit status is not an error", &exec.ExitError{}, nil, true, nil},
+		{"wait delay is not an error", exec.ErrWaitDelay, nil, true, nil},
+		{"wait failure", ioErr, nil, false, []error{ioErr}},
+		{"cancelled", &exec.ExitError{}, context.Canceled, false, []error{context.Canceled}},
+		{"cancelled and wait failure", ioErr, context.Canceled, false, []error{context.Canceled, ioErr}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runError(tt.waitErr, tt.ctx)
+			if (err == nil) != tt.wantNil {
+				t.Fatalf("err = %v", err)
+			}
+			for _, want := range tt.wantIs {
+				if !errors.Is(err, want) {
+					t.Fatalf("errors.Is(%v, %v) = false", err, want)
+				}
+			}
+		})
 	}
 }
