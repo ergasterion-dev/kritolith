@@ -1,6 +1,7 @@
 package ground
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -9,10 +10,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ergasterion-dev/kritolith/internal/report"
@@ -540,4 +543,337 @@ func ValidateClaimPath(path string) error {
 		}
 	}
 	return nil
+}
+
+// Archive limits. They bound what a hostile repository can make
+// Archive write to disk. They are vars so tests can lower them.
+var (
+	// maxArchiveBytes bounds the total size of the files extracted.
+	maxArchiveBytes int64 = 4 << 30
+	// maxArchiveEntries bounds the number of tar entries read.
+	maxArchiveEntries = 1 << 20
+)
+
+// archiveAttributes is written to the mirror's info/attributes, which
+// takes precedence over every in-tree .gitattributes: without it a
+// repository could hide files (export-ignore) or rewrite their content
+// (export-subst) in the extracted tree, so the tree the sandbox builds
+// would not be the code at the commit.
+const archiveAttributes = "* -export-ignore -export-subst\n"
+
+// Archive extracts the tree of commit (a full object id the mirror
+// holds) into dst, which must be an absolute path to an empty directory
+// or a missing one (created 0700). It runs `git archive` and reads the
+// tar stream itself instead of piping it to tar(1), so every entry is
+// checked before it is written: names must stay inside dst; hard
+// links, devices and FIFOs are refused; the total size and entry count
+// are bounded. Symlinks are created last, and any whose target is
+// absolute, leaves dst, or does not resolve inside dst (also through
+// other links) is dropped. On error dst may hold a partial tree; the
+// caller removes it.
+func (m *Mirror) Archive(ctx context.Context, commit, dst string) (err error) {
+	if !isObjectID(commit) {
+		return fmt.Errorf("ground: archive: %s is not a full commit id", report.Printable(commit))
+	}
+	if !filepath.IsAbs(dst) {
+		return fmt.Errorf("ground: archive: destination %s is not absolute", report.Printable(dst))
+	}
+	if sha, ok := m.resolve(ctx, commit); !ok || sha != commit {
+		return fmt.Errorf("ground: archive: commit %s is not in the mirror", commit)
+	}
+	if err := makeEmptyPrivateDir(dst); err != nil {
+		return fmt.Errorf("ground: archive: %w", err)
+	}
+	if err := m.pinArchiveAttributes(); err != nil {
+		return fmt.Errorf("ground: archive: %w", err)
+	}
+	cmd := gitCommand(ctx, m.path, "archive", "--format=tar", commit)
+	stderr := &headBuffer{limit: 4096}
+	cmd.Stderr = stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("ground: archive: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("ground: archive: %w", err)
+	}
+	// Tar framing adds at most a header and padding (1 KiB) per entry.
+	raw := io.LimitReader(stdout, maxArchiveBytes+int64(maxArchiveEntries)*1024+1<<20)
+	exErr := extractTar(raw, dst)
+	if exErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if exErr != nil {
+		return fmt.Errorf("ground: archive %s: %w", commit, exErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("ground: archive %s: %w: %s", commit, waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// headBuffer keeps the first limit bytes written to it.
+type headBuffer struct {
+	limit int
+	buf   bytes.Buffer
+}
+
+func (h *headBuffer) Write(p []byte) (int, error) {
+	if room := h.limit - h.buf.Len(); room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		h.buf.Write(p[:room])
+	}
+	return len(p), nil
+}
+
+func (h *headBuffer) String() string { return h.buf.String() }
+
+// pinArchiveAttributes makes sure info/attributes neutralises in-tree
+// export attributes. It writes through a rename so a concurrent
+// Archive never sees a partial file.
+func (m *Mirror) pinArchiveAttributes() error {
+	info := filepath.Join(m.path, "info")
+	p := filepath.Join(info, "attributes")
+	if b, err := os.ReadFile(p); err == nil && string(b) == archiveAttributes {
+		return nil
+	}
+	if err := os.MkdirAll(info, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(info, "attributes.tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // no-op once renamed
+	if _, err := f.WriteString(archiveAttributes); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), p)
+}
+
+// makeEmptyPrivateDir creates dst 0700, or accepts an existing empty
+// directory (not a symlink) and sets it to 0700.
+func makeEmptyPrivateDir(dst string) error {
+	fi, err := os.Lstat(dst)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.Mkdir(dst, 0o700)
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("destination %s is not a directory", report.Printable(dst))
+	}
+	ents, err := os.ReadDir(dst)
+	if err != nil {
+		return err
+	}
+	if len(ents) != 0 {
+		return fmt.Errorf("destination %s is not empty", report.Printable(dst))
+	}
+	return os.Chmod(dst, 0o700)
+}
+
+// archiveEntryPath validates a tar entry name: relative, clean once a
+// trailing slash is removed, no "." or ".." element, no NUL.
+func archiveEntryPath(name string) (string, bool) {
+	name = strings.TrimSuffix(name, "/")
+	if name == "" || strings.HasPrefix(name, "/") || strings.ContainsRune(name, 0) {
+		return "", false
+	}
+	for _, e := range strings.Split(name, "/") {
+		if e == "" || e == "." || e == ".." {
+			return "", false
+		}
+	}
+	return name, true
+}
+
+type archiveLink struct{ name, target string }
+
+// extractTar writes the entries of a git archive tar stream under root.
+// No symlink exists under root until every file and directory has been
+// written, so no write can be redirected through one.
+func extractTar(r io.Reader, root string) error {
+	tr := tar.NewReader(r)
+	var total int64
+	var links []archiveLink
+	for entries := 0; ; entries++ {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar stream: %w", err)
+		}
+		if entries >= maxArchiveEntries {
+			return fmt.Errorf("archive has more than %d entries (limit)", maxArchiveEntries)
+		}
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue // git's commit id comment
+		}
+		name, ok := archiveEntryPath(hdr.Name)
+		if !ok {
+			return fmt.Errorf("refusing archive entry %s", report.Printable(hdr.Name))
+		}
+		full := filepath.Join(root, filepath.FromSlash(name))
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(full, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if hdr.Size < 0 {
+				return fmt.Errorf("archive entry %s has a negative size", report.Printable(name))
+			}
+			if total += hdr.Size; total > maxArchiveBytes {
+				return fmt.Errorf("archive is larger than the %d byte limit", maxArchiveBytes)
+			}
+			if err := writeArchiveFile(full, hdr, tr); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			links = append(links, archiveLink{name: name, target: hdr.Linkname})
+		default:
+			return fmt.Errorf("refusing archive entry %s of type %q", report.Printable(name), hdr.Typeflag)
+		}
+	}
+	return placeLinks(root, links)
+}
+
+func writeArchiveFile(full string, hdr *tar.Header, r io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if hdr.Mode&0o100 != 0 {
+		mode = 0o755
+	}
+	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, io.LimitReader(r, hdr.Size)); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// placeLinks creates the symlinks whose target is relative and stays
+// inside root lexically, then removes, until none is left, every link
+// that does not really resolve inside root: a chain of links that each
+// look inside ("l -> ..", "x -> l/..") can still leave the tree.
+func placeLinks(root string, links []archiveLink) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	var made []string
+	for _, l := range links {
+		if l.target == "" || strings.HasPrefix(l.target, "/") || strings.ContainsRune(l.target, 0) {
+			continue
+		}
+		joined := path.Join(path.Dir(l.name), l.target)
+		if joined == ".." || strings.HasPrefix(joined, "../") {
+			continue
+		}
+		full := filepath.Join(root, filepath.FromSlash(l.name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if err := os.Symlink(l.target, full); err != nil {
+			return err
+		}
+		made = append(made, full)
+	}
+	for changed := true; changed; {
+		changed = false
+		kept := made[:0]
+		for _, full := range made {
+			real, err := filepath.EvalSymlinks(full)
+			if err != nil || (real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator))) {
+				if err := os.Remove(full); err != nil {
+					return err
+				}
+				changed = true
+				continue
+			}
+			kept = append(kept, full)
+		}
+		made = kept
+	}
+	return nil
+}
+
+// DefaultBranchRef returns the commit at the tip of the remote's
+// default branch, asked of the remote with `git ls-remote --symref
+// origin HEAD`. The mirror's own HEAD symref is never used: fetch
+// --prune does not refresh it, so after the remote renames its default
+// branch it is stale. If the mirror lacks the commit it is fetched once;
+// the commit must then be on a branch or tag of the mirror.
+func (m *Mirror) DefaultBranchRef(ctx context.Context) (string, error) {
+	if !m.exists() {
+		return "", fmt.Errorf("ground: default branch: the mirror has not been cloned")
+	}
+	nctx, cancel := context.WithTimeout(ctx, networkTimeout)
+	defer cancel()
+	out, err := m.runGit(nctx, m.path, append(slices.Clone(networkStallArgs), "ls-remote", "--symref", "origin", "HEAD")...)
+	if err != nil {
+		return "", fmt.Errorf("ground: default branch: %w", err)
+	}
+	sha, err := parseLsRemoteHead(out)
+	if err != nil {
+		return "", fmt.Errorf("ground: default branch: %w", err)
+	}
+	if got, ok := m.resolve(ctx, sha); !ok || got != sha {
+		if err := m.fetch(ctx); err != nil {
+			return "", fmt.Errorf("ground: default branch: fetch: %w", err)
+		}
+		if got, ok := m.resolve(ctx, sha); !ok || got != sha {
+			return "", fmt.Errorf("ground: default branch: commit %s is not in the mirror after a fetch", sha)
+		}
+	}
+	if !m.onBranchOrTag(ctx, sha) {
+		return "", fmt.Errorf("ground: default branch: commit %s is on no branch or tag of the mirror", sha)
+	}
+	return sha, nil
+}
+
+// parseLsRemoteHead reads `ls-remote --symref origin HEAD` output:
+// an optional "ref: refs/heads/<name>\tHEAD" line and a
+// "<object id>\tHEAD" line. A symref, if present, must name a branch.
+func parseLsRemoteHead(out string) (string, error) {
+	sha := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		left, ref, ok := strings.Cut(line, "\t")
+		if !ok || ref != "HEAD" {
+			continue
+		}
+		if target, isSym := strings.CutPrefix(left, "ref: "); isSym {
+			if !strings.HasPrefix(target, "refs/heads/") {
+				return "", fmt.Errorf("remote HEAD points at %s, not a branch", report.Printable(target))
+			}
+			continue
+		}
+		if !isObjectID(left) {
+			return "", fmt.Errorf("unexpected ls-remote output")
+		}
+		if sha != "" && sha != left {
+			return "", fmt.Errorf("remote reports more than one HEAD")
+		}
+		sha = left
+	}
+	if sha == "" {
+		return "", fmt.Errorf("the remote has no HEAD")
+	}
+	return sha, nil
 }

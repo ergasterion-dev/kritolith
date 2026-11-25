@@ -656,3 +656,278 @@ func TestEnsureAndResolveIgnoresCommitsOffEveryBranchAndTag(t *testing.T) {
 		t.Fatalf("outcome = %s, want NEEDS_INFO", v.Outcome)
 	}
 }
+
+// archiveOrigin builds an origin with a first commit (a.go, sub/b.go,
+// an executable script, in-tree and escaping symlinks, attributes that
+// would hide or rewrite files in a plain git archive) and a second
+// commit that adds later.go.
+func archiveOrigin(t *testing.T) (origin, first, second string) {
+	t.Helper()
+	origin = t.TempDir()
+	gitIn(t, origin, "init", "-q", "-b", "main")
+	gitIn(t, origin, "config", "user.email", "test@test.example")
+	gitIn(t, origin, "config", "user.name", "test")
+	write := func(name, content string, mode os.FileMode) {
+		p := filepath.Join(origin, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.go", "package a\n", 0o644)
+	write("sub/b.go", "package sub\n", 0o644)
+	write("run.sh", "#!/bin/sh\n", 0o755)
+	write("testdata/seed", "seed\n", 0o644)
+	write("subst.txt", "$Format:%H$\n", 0o644)
+	write(".gitattributes", "testdata export-ignore\nsubst.txt export-subst\n", 0o644)
+	links := map[string]string{
+		"in-link":      "a.go",
+		"sub/up-in":    "../a.go",
+		"abs-link":     "/etc/passwd",
+		"escape-link":  "../../outside",
+		"sub/parent":   "..",
+		"through-link": "sub/parent/..", // lexically "sub", really the parent of the tree
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(origin, filepath.FromSlash(name))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitIn(t, origin, "add", "-A")
+	gitIn(t, origin, "commit", "-q", "-m", "first")
+	first = gitIn(t, origin, "rev-parse", "HEAD")
+	second = commitIn(t, origin, "later.go", "package a\n")
+	return origin, first, second
+}
+
+func TestArchiveExtractsTreeAtCommit(t *testing.T) {
+	origin, first, second := archiveOrigin(t)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _, err := m.EnsureAndResolve(ctx, second, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	dst := filepath.Join(t.TempDir(), "src")
+	if err := m.Archive(ctx, first, dst); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(dst)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("dst = %v, %v; want a 0700 directory", fi, err)
+	}
+	for name, want := range map[string]string{
+		"a.go": "package a\n", "sub/b.go": "package sub\n", "testdata/seed": "seed\n",
+		// export-subst would have replaced the placeholder with the commit.
+		"subst.txt": "$Format:%H$\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(dst, filepath.FromSlash(name)))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "later.go")); !os.IsNotExist(err) {
+		t.Errorf("later.go from the second commit is present: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dst, "run.sh")); err != nil || fi.Mode().Perm()&0o100 == 0 {
+		t.Errorf("run.sh lost its executable bit: %v %v", fi, err)
+	}
+
+	// A second archive of the other commit into a fresh dir sees it.
+	dst2 := filepath.Join(t.TempDir(), "src")
+	if err := m.Archive(ctx, second, dst2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst2, "later.go")); err != nil {
+		t.Errorf("later.go missing at the second commit: %v", err)
+	}
+}
+
+func TestArchiveDropsEscapingSymlinks(t *testing.T) {
+	origin, first, _ := archiveOrigin(t)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _, err := m.EnsureAndResolve(ctx, first, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	dst := filepath.Join(t.TempDir(), "src")
+	if err := m.Archive(ctx, first, dst); err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]bool{"in-link": true, "sub/up-in": true, "sub/parent": true}
+	for _, name := range []string{"in-link", "sub/up-in", "sub/parent", "abs-link", "escape-link", "through-link"} {
+		_, err := os.Lstat(filepath.Join(dst, filepath.FromSlash(name)))
+		if kept[name] && err != nil {
+			t.Errorf("in-tree symlink %s was dropped: %v", name, err)
+		}
+		if !kept[name] && !os.IsNotExist(err) {
+			t.Errorf("escaping symlink %s was extracted (err %v)", name, err)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "in-link")); err != nil || string(got) != "package a\n" {
+		t.Errorf("in-link reads %q, %v", got, err)
+	}
+}
+
+func TestArchiveRefusesBadDestinationsAndCommits(t *testing.T) {
+	origin, commit := newTestOrigin(t)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	nonEmpty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nonEmpty, "x"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, commit, dst string }{
+		{"non-empty dst", commit, nonEmpty},
+		{"symlink dst", commit, link},
+		{"file dst", commit, file},
+		{"relative dst", commit, "rel/dir"},
+		{"short commit", commit[:12], filepath.Join(t.TempDir(), "a")},
+		{"ref name", "main", filepath.Join(t.TempDir(), "b")},
+		{"option-looking commit", "--output=/tmp/x", filepath.Join(t.TempDir(), "c")},
+		{"unknown commit", strings.Repeat("a", 40), filepath.Join(t.TempDir(), "d")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := m.Archive(ctx, tt.commit, tt.dst); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}
+
+func TestArchiveSizeLimit(t *testing.T) {
+	origin, commit := newTestOrigin(t)
+	m, err := OpenMirror(t.TempDir(), "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	old := maxArchiveBytes
+	maxArchiveBytes = 4
+	defer func() { maxArchiveBytes = old }()
+	if err := m.Archive(ctx, commit, filepath.Join(t.TempDir(), "src")); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("err = %v, want a size limit error", err)
+	}
+}
+
+// The mirror's HEAD symref is not refreshed by fetch --prune, so after
+// the remote renames its default branch the mirror's HEAD is stale.
+// DefaultBranchRef must ask the remote and return the new branch's
+// commit, fetching it if the mirror does not have it yet.
+func TestDefaultBranchRefFollowsRenamedDefaultBranch(t *testing.T) {
+	work, _ := newTestOrigin(t)
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, "", "clone", "-q", "--bare", work, bare)
+
+	m, err := OpenMirror(t.TempDir(), "owner/name", bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	mainSHA := gitIn(t, bare, "rev-parse", "refs/heads/main")
+	if _, ok, _, err := m.EnsureAndResolve(ctx, mainSHA, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	if got, err := m.DefaultBranchRef(ctx); err != nil || got != mainSHA {
+		t.Fatalf("DefaultBranchRef before rename = %q, %v; want %q", got, err, mainSHA)
+	}
+
+	// Upstream: a new commit on "trunk", which becomes the default
+	// branch; "main" is deleted.
+	gitIn(t, work, "checkout", "-q", "-b", "trunk")
+	trunkSHA := commitIn(t, work, "trunk.go", "package a\n")
+	gitIn(t, work, "push", "-q", bare, "trunk")
+	gitIn(t, bare, "symbolic-ref", "HEAD", "refs/heads/trunk")
+	gitIn(t, bare, "branch", "-q", "-D", "main")
+
+	// The mirror does not have trunk's commit yet: DefaultBranchRef
+	// fetches it.
+	got, err := m.DefaultBranchRef(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != trunkSHA {
+		t.Fatalf("DefaultBranchRef = %q, want trunk %q", got, trunkSHA)
+	}
+	if err := m.Archive(ctx, got, filepath.Join(t.TempDir(), "src")); err != nil {
+		t.Fatalf("archive the default branch commit: %v", err)
+	}
+
+	// Whether fetch refreshes a mirror's HEAD depends on the git
+	// version; older ones leave it pointing at the old branch. Make it
+	// stale explicitly: HEAD -> refs/heads/main at the old commit.
+	gitIn(t, m.path, "update-ref", "refs/heads/main", mainSHA)
+	gitIn(t, m.path, "symbolic-ref", "HEAD", "refs/heads/main")
+	if head := gitIn(t, m.path, "rev-parse", "HEAD"); head != mainSHA {
+		t.Fatalf("test setup: mirror HEAD = %q, want the stale %q", head, mainSHA)
+	}
+	if got, err := m.DefaultBranchRef(ctx); err != nil || got != trunkSHA {
+		t.Fatalf("DefaultBranchRef with a stale mirror HEAD = %q, %v; want trunk %q", got, err, trunkSHA)
+	}
+}
+
+func TestParseLsRemoteHead(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	tests := []struct {
+		name, out, want string
+	}{
+		{"symref and head", "ref: refs/heads/trunk\tHEAD\n" + sha + "\tHEAD\n", sha},
+		{"head only", sha + "\tHEAD\n", sha},
+		{"symref to a tag", "ref: refs/tags/v1\tHEAD\n" + sha + "\tHEAD\n", ""},
+		{"no head", "", ""},
+		{"bad id", "zz\tHEAD\n", ""},
+		{"two heads", sha + "\tHEAD\n" + strings.Repeat("b", 40) + "\tHEAD\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseLsRemoteHead(tt.out)
+			if got != tt.want || (tt.want == "") != (err != nil) {
+				t.Fatalf("parseLsRemoteHead = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultBranchRefUnreachableRemote(t *testing.T) {
+	origin, commit := newTestOrigin(t)
+	dataDir := t.TempDir()
+	m, err := OpenMirror(dataDir, "owner/name", origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _, err := m.EnsureAndResolve(ctx, commit, nil); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	if err := os.RemoveAll(origin); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.DefaultBranchRef(ctx); err == nil {
+		t.Fatalf("DefaultBranchRef = %q, want an error for a gone remote", got)
+	}
+}
