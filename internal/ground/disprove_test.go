@@ -235,7 +235,9 @@ func TestComposeOnCorpusShapes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			v := verdict.Compose(r, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved, ResolvedRef: ref})
+			// HasPoC keeps the no-PoC NEEDS_INFO rule out of the way: this
+			// test is about which claim shapes can reject a report.
+			v := verdict.Compose(r, verdict.StageResults{Claims: grounded, GroundingRan: true, RefResolved: resolved, ResolvedRef: ref, HasPoC: true})
 			if v.Outcome != tt.want {
 				t.Errorf("Outcome = %s, want %s; claims: %+v", v.Outcome, tt.want, grounded)
 			}

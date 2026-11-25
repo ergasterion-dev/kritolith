@@ -61,7 +61,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr: %s", code, errOut.String())
 	}
-	if !strings.HasPrefix(out.String(), "Kritolith: INCONCLUSIVE at e1fcd82abba3\n") {
+	if !strings.HasPrefix(out.String(), "Kritolith: NEEDS_INFO at e1fcd82abba3\n") { // no --poc: no runnable PoC
 		t.Fatalf("stdout = %q", out.String())
 	}
 }

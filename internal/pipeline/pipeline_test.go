@@ -10,6 +10,7 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/report"
+	"github.com/ergasterion-dev/kritolith/internal/sandbox"
 	"github.com/ergasterion-dev/kritolith/internal/store"
 )
 
@@ -35,10 +36,10 @@ func TestRunOrderAndOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.Outcome != report.OutcomeInconclusive {
-		t.Errorf("outcome = %s", v.Outcome)
+	if v.Outcome != report.OutcomeNeedsInfo {
+		t.Errorf("outcome = %s, want NEEDS_INFO (no runnable PoC attached)", v.Outcome)
 	}
-	if len(fs.calls) != 2 || fs.calls[0] != "report:R1" || fs.calls[1] != "verdict:INCONCLUSIVE" {
+	if len(fs.calls) != 2 || fs.calls[0] != "report:R1" || fs.calls[1] != "verdict:NEEDS_INFO" {
 		t.Errorf("calls = %v", fs.calls)
 	}
 }
@@ -244,7 +245,7 @@ func TestRunGroundingRefNotResolved(t *testing.T) {
 
 func TestRunWithNoGrounderConfiguredIsUnchanged(t *testing.T) {
 	fs := &fakeStore{}
-	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go."}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: "v1", Body: "See a.go.", PoC: []report.Artifact{{Name: "poc_test.go", Content: []byte("package a")}}}
 	v, err := New(fs).Run(context.Background(), r) // no WithGround call
 	if err != nil {
 		t.Fatal(err)
@@ -315,5 +316,173 @@ func TestPipelineRunWithoutDedupeUnchanged(t *testing.T) {
 	}
 	if v.Outcome != report.OutcomeNeedsInfo {
 		t.Errorf("Outcome = %s, want NEEDS_INFO (no ClaimedRef), unaffected by the new dedupe stage", v.Outcome)
+	}
+}
+
+type fakeRunner struct {
+	result sandbox.Result
+	panics bool
+	calls  []sandbox.Request
+}
+
+func (f *fakeRunner) Run(_ context.Context, req sandbox.Request) sandbox.Result {
+	f.calls = append(f.calls, req)
+	if f.panics {
+		panic("runner blew up")
+	}
+	return f.result
+}
+
+func TestRunSandboxStage(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	poc := []report.Artifact{{Name: "poc_test.go", Content: []byte("package a")}}
+	verified := []report.Claim{{Kind: report.ClaimFunction, Value: "a.F", Verified: report.TriYes}}
+	missing := []report.Claim{{Kind: report.ClaimFunction, Value: "a.G", Verified: report.TriNo}}
+	repro := func() *report.ReproResult {
+		return &report.ReproResult{Ref: sha, Reproduced: true, Signal: "panic-in-claimed-code", ControlState: "fixed",
+			LogSHA256: map[string]string{"run": "ab"}, Notes: []string{"n"}, Control: &report.ReproResult{Ref: "head"}}
+	}
+	ok := fakeGrounder{claims: verified, resolved: true, resolvedRef: sha, module: "example.com/a"}
+	tests := []struct {
+		name       string
+		poc        []report.Artifact
+		grounder   *fakeGrounder
+		runner     *fakeRunner
+		wantCalled bool
+		want       report.Outcome
+	}{
+		{"reproduced, fixed at HEAD", poc, &ok, &fakeRunner{result: sandbox.Result{Repro: repro()}}, true, report.OutcomeReproducedFixedAtHead},
+		{"ran clean", poc, &ok, &fakeRunner{result: sandbox.Result{Repro: &report.ReproResult{Ref: sha}, Passed: true}}, true, report.OutcomeNotReproduced},
+		{"needs info", poc, &ok, &fakeRunner{result: sandbox.Result{NeedsInfo: "no Go files"}}, true, report.OutcomeNeedsInfo},
+		{"skipped", poc, &ok, &fakeRunner{result: sandbox.Result{Skipped: "no sandbox rootfs is configured"}}, true, report.OutcomeInconclusive},
+		{"runner panics", poc, &ok, &fakeRunner{panics: true}, true, report.OutcomeInconclusive},
+		{"runner returns nothing", poc, &ok, &fakeRunner{}, true, report.OutcomeInconclusive},
+		{"passed without evidence", poc, &ok, &fakeRunner{result: sandbox.Result{Passed: true}}, true, report.OutcomeInconclusive},
+		{"no PoC", nil, &ok, &fakeRunner{result: sandbox.Result{Repro: repro()}}, false, report.OutcomeNeedsInfo},
+		{"no grounder", poc, nil, &fakeRunner{result: sandbox.Result{Repro: repro()}}, false, report.OutcomeInconclusive},
+		{"ref unresolved", poc, &fakeGrounder{resolved: false}, &fakeRunner{result: sandbox.Result{Repro: repro()}}, false, report.OutcomeNeedsInfo},
+		{"hard claim failed", poc, &fakeGrounder{claims: missing, resolved: true, resolvedRef: sha}, &fakeRunner{result: sandbox.Result{Repro: repro()}}, false, report.OutcomeGroundingFailed},
+		{"hard claim failed via fallback", poc, &fakeGrounder{claims: missing, resolved: true, resolvedRef: sha, viaFallback: true}, &fakeRunner{result: sandbox.Result{Repro: repro()}}, false, report.OutcomeInconclusive},
+		{"no sandbox configured", poc, &ok, nil, false, report.OutcomeInconclusive},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha, Body: "x", PoC: tt.poc}
+			p := New(&fakeStore{})
+			if tt.grounder != nil {
+				p = p.WithGround(*tt.grounder)
+			}
+			if tt.runner != nil {
+				p = p.WithSandbox(tt.runner)
+			}
+			v, err := p.Run(context.Background(), r)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if v.Outcome != tt.want {
+				t.Errorf("Outcome = %s, want %s (notes %q)", v.Outcome, tt.want, v.Notes)
+			}
+			called := tt.runner != nil && len(tt.runner.calls) > 0
+			if called != tt.wantCalled {
+				t.Fatalf("runner called = %v, want %v", called, tt.wantCalled)
+			}
+			if !called {
+				if v.Repro != nil {
+					t.Errorf("Repro = %+v, want nil when the sandbox did not run", v.Repro)
+				}
+				return
+			}
+			req := tt.runner.calls[0]
+			if req.ResolvedRef != sha || req.Module != "example.com/a" || req.Report.ID != "R1" || len(req.Claims) != 1 || req.ViaFallback {
+				t.Errorf("Request = %+v, want grounding's ref, module and claims", req)
+			}
+			if got := tt.runner.result.Repro; got != nil {
+				if v.Repro == nil || v.Repro == got || (got.Control != nil && v.Repro.Control == got.Control) {
+					t.Fatalf("Repro = %+v, want a deep copy of %+v", v.Repro, got)
+				}
+				if len(got.Notes) > 0 {
+					got.Notes[0] = "mutated"
+					got.LogSHA256["run"] = "mutated"
+					if v.Repro.Notes[0] != "n" || v.Repro.LogSHA256["run"] != "ab" {
+						t.Errorf("verdict Repro shares memory with the runner's result: %+v", v.Repro)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRunSandboxPassesFallback(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	fr := &fakeRunner{result: sandbox.Result{Repro: &report.ReproResult{Ref: sha}, Passed: true}}
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha, PoC: []report.Artifact{{Name: "p_test.go"}}}
+	v, err := New(&fakeStore{}).WithGround(fakeGrounder{resolved: true, resolvedRef: sha, viaFallback: true}).WithSandbox(fr).Run(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.calls) != 1 || !fr.calls[0].ViaFallback {
+		t.Fatalf("calls = %+v, want one request with ViaFallback", fr.calls)
+	}
+	if v.Outcome != report.OutcomeInconclusive {
+		t.Errorf("Outcome = %s, want INCONCLUSIVE: a clean run at a fallback version is not NOT_REPRODUCED", v.Outcome)
+	}
+}
+
+func TestRunSandboxLogSink(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	logs := map[string][]byte{"run": []byte("hostile output")}
+	fr := &fakeRunner{result: sandbox.Result{Repro: &report.ReproResult{Ref: sha}, Inconclusive: "timeout", Logs: logs}}
+	var gotID string
+	var gotLogs map[string][]byte
+	sink := func(id string, l map[string][]byte) { gotID, gotLogs = id, l }
+	p := New(&fakeStore{}).WithGround(fakeGrounder{resolved: true, resolvedRef: sha}).WithSandbox(fr).WithSandboxLogs(sink)
+
+	v, err := p.Run(context.Background(), report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha, PoC: []report.Artifact{{Name: "p_test.go"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotID != "R1" || string(gotLogs["run"]) != "hostile output" {
+		t.Errorf("sink got (%q, %q), want the run's logs", gotID, gotLogs)
+	}
+	for _, n := range v.Notes {
+		if strings.Contains(n, "hostile output") {
+			t.Errorf("log text leaked into the verdict notes: %q", v.Notes)
+		}
+	}
+
+	gotID = ""
+	if _, err := p.Run(context.Background(), report.Report{ID: "R2", Repo: "a/b", ClaimedRef: sha}); err != nil {
+		t.Fatal(err)
+	}
+	if gotID != "" {
+		t.Errorf("sink called for a report without a PoC")
+	}
+}
+
+// A sandbox configured on the pipeline must not change what is stored
+// for a report with no PoC: the runner is never called and the stored
+// verdict is NEEDS_INFO.
+func TestRunSandboxNoPoCStoresNeedsInfo(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	fr := &fakeRunner{result: sandbox.Result{Repro: &report.ReproResult{Ref: sha, Reproduced: true}}}
+	r := report.Report{ID: "01ARYZ6S410000000000000001", Source: report.SourceFile, Repo: "a/b", ClaimedRef: sha}
+	if _, err := New(st).WithGround(fakeGrounder{resolved: true, resolvedRef: sha}).WithSandbox(fr).Run(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner called %d times for a report without a PoC", len(fr.calls))
+	}
+	got, err := st.GetVerdict(ctx, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != report.OutcomeNeedsInfo || got.Repro != nil {
+		t.Errorf("stored verdict = %s (repro %+v), want NEEDS_INFO with no repro", got.Outcome, got.Repro)
 	}
 }
