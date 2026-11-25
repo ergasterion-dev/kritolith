@@ -291,6 +291,14 @@ type fixture struct {
 func newFixture(t *testing.T, script map[string]step) *fixture {
 	t.Helper()
 	rootfs := t.TempDir()
+	// A C compiler in the rootfs, so -race is available; a test that
+	// wants a rootfs without one removes it (noCompiler).
+	if err := os.MkdirAll(filepath.Join(rootfs, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "usr", "bin", "gcc"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	scratch := t.TempDir()
 	src := &fakeSource{trees: map[string]map[string]string{refSHA: baseTree(), headSHA: baseTree()}, head: headSHA}
 	drv := &fakeDriver{t: t, script: script, pocName: "poc_test.go"}
@@ -298,6 +306,15 @@ func newFixture(t *testing.T, script map[string]step) *fixture {
 	r := NewRunner(testCfg(rootfs), src, drv, scratch)
 	r.bridge = fb
 	return &fixture{src: src, drv: drv, bridges: fb, runner: r, scratch: scratch, rootfs: rootfs}
+}
+
+// noCompiler removes the rootfs's C compiler, so the Runner builds
+// without -race. Call it before the first run.
+func (fx *fixture) noCompiler(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(fx.rootfs, "usr", "bin", "gcc")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (fx *fixture) run(t *testing.T, req Request) Result {

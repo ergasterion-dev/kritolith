@@ -69,16 +69,17 @@ func TestRunnerContainerSpecs(t *testing.T) {
 	for _, race := range []bool{false, true} {
 		t.Run(fmt.Sprintf("race=%v", race), func(t *testing.T) {
 			fx := newFixture(t, map[string]step{"ref/run": stepPanic, "head/run": stepPass})
-			if race {
-				if err := os.MkdirAll(filepath.Join(fx.rootfs, "usr", "bin"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(fx.rootfs, "usr", "bin", "gcc"), nil, 0o755); err != nil {
-					t.Fatal(err)
-				}
+			if !race {
+				fx.noCompiler(t)
 			}
 			res := fx.run(t, Request{})
-			if !res.Repro.Reproduced || res.Repro.ControlState != ControlFixed {
+			// Without -race a clean control says nothing about a race,
+			// so it cannot count as fixed.
+			wantControl := ControlFixed
+			if !race {
+				wantControl = ControlUnavailable
+			}
+			if !res.Repro.Reproduced || res.Repro.ControlState != wantControl {
 				t.Fatalf("setup: %+v", res.Repro)
 			}
 			raceNote := strings.Contains(strings.Join(res.Repro.Notes, "\n"), "race detector unavailable")
@@ -230,7 +231,7 @@ func TestRunnerProgramShape(t *testing.T) {
 		t.Fatalf("result %+v", res)
 	}
 	build, run := fx.drv.calls[1], fx.drv.calls[2]
-	if got := strings.Join(build.spec.Container.Args, " "); got != "go build -o /out/poc ./cmd/kritolith-poc" {
+	if got := strings.Join(build.spec.Container.Args, " "); got != "go build -o /out/poc -race ./cmd/kritolith-poc" {
 		t.Fatalf("build args %q", got)
 	}
 	if !hasArg(build.srcFiles, "cmd/kritolith-poc/main.go") {

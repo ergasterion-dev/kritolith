@@ -314,6 +314,7 @@ func Render(r report.Report, v report.Verdict) string {
 			kind, report.Printable(id), d.Score, report.Printable(d.Evidence))
 	}
 	renderRepro(&b, v)
+	renderReproNotes(&b, v)
 	for _, n := range v.Notes {
 		fmt.Fprintf(&b, "• %s\n", report.Printable(n))
 	}
@@ -362,6 +363,28 @@ func renderRepro(b *strings.Builder, v report.Verdict) {
 		b.WriteString(pocOutputNote + "\n")
 	case report.OutcomeNotReproduced:
 		fmt.Fprintf(b, "• PoC ran clean at %s\n", ref)
+	}
+}
+
+// renderReproNotes writes the sandbox's own notes on the run (the race
+// detector was unavailable, cgroup limits were not in force, ...) for
+// every outcome that carries a Repro: they qualify what the run shows,
+// whatever the outcome. A note the composed notes already carry, as is
+// or as "sandbox: <note>", and repeats are written once.
+func renderReproNotes(b *strings.Builder, v report.Verdict) {
+	if v.Repro == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, n := range v.Notes {
+		seen[n] = true
+	}
+	for _, n := range v.Repro.Notes {
+		if n == "" || seen[n] || seen["sandbox: "+n] {
+			continue
+		}
+		seen[n] = true
+		fmt.Fprintf(b, "• sandbox note: %s\n", report.Printable(n))
 	}
 }
 

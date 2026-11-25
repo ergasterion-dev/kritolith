@@ -275,3 +275,41 @@ func TestRunnerBeforeContainers(t *testing.T) {
 const skipOut = "=== RUN   TestPoC\n    poc_test.go:5: not today\n--- SKIP: TestPoC (0.00s)\nPASS\n"
 
 var twoTestPoC = []report.Artifact{{Name: "poc_test.go", Content: []byte("package vuln\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n\nfunc TestB(t *testing.T) {}\n")}}
+
+// TestRunnerNoRaceDetectorIsInconclusive: a rootfs without a C
+// compiler builds the PoC without -race, so a clean run (at the ref or
+// as the control) says nothing about a data race. It must never read
+// as NOT_REPRODUCED or as fixed at HEAD.
+func TestRunnerNoRaceDetectorIsInconclusive(t *testing.T) {
+	t.Run("clean run at the ref", func(t *testing.T) {
+		fx := newFixture(t, map[string]step{"ref/run": stepPass})
+		fx.noCompiler(t)
+		res := fx.run(t, Request{})
+		if res.Passed {
+			t.Fatalf("Passed = true without the race detector: %+v", res)
+		}
+		if !strings.Contains(res.Inconclusive, "without -race") {
+			t.Fatalf("Inconclusive = %q, want the missing race detector named", res.Inconclusive)
+		}
+		if res.Repro == nil || !strings.Contains(strings.Join(res.Repro.Notes, "\n"), "race detector unavailable") {
+			t.Fatalf("Repro notes miss the race caveat: %+v", res.Repro)
+		}
+	})
+	t.Run("clean control", func(t *testing.T) {
+		fx := newFixture(t, map[string]step{"ref/run": stepAssert, "head/run": stepPass})
+		fx.noCompiler(t)
+		res := fx.run(t, Request{})
+		if res.Repro.ControlState == ControlFixed || res.Repro.Reproduced {
+			t.Fatalf("a clean control without -race counted as fixed: %+v", res.Repro)
+		}
+		if res.Inconclusive == "" {
+			t.Fatalf("weak signal with an unusable control must be inconclusive: %+v", res)
+		}
+	})
+	t.Run("with a compiler a clean run passes", func(t *testing.T) {
+		fx := newFixture(t, map[string]step{"ref/run": stepPass})
+		if res := fx.run(t, Request{}); !res.Passed || res.Inconclusive != "" {
+			t.Fatalf("want Passed: %+v", res)
+		}
+	})
+}

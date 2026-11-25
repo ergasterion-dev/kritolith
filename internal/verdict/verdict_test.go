@@ -571,3 +571,54 @@ func TestRenderKeysOffOutcome(t *testing.T) {
 		t.Errorf("NOT_REPRODUCED render wrong:\n%s", out)
 	}
 }
+
+// TestRenderReproNotesGolden: the caveats the sandbox attached to a run
+// (no race detector, cgroups not in force, ...) qualify the verdict, so
+// they are rendered for every outcome that carries a Repro, once each,
+// and never twice when the composed notes already say the same thing.
+func TestRenderReproNotesGolden(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	const noRace = "race detector unavailable: the sandbox rootfs has no C compiler, so the PoC was built without -race"
+	const cgroups = "cgroup limits (memory, CPU, processes) were not in force: the runtime ran with --ignore-cgroups; rlimits and the wall clock still applied"
+	const why = "the PoC ran clean, but it was built without -race"
+	r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha}
+	tests := []struct {
+		name string
+		v    report.Verdict
+		want string
+	}{
+		{"inconclusive without race", report.Verdict{ReportID: "R1", Outcome: report.OutcomeInconclusive,
+			Repro: &report.ReproResult{Ref: sha, Signal: "none (passed): ok", Notes: []string{noRace, cgroups, why}},
+			Notes: []string{"sandbox: " + why}},
+			"Kritolith: INCONCLUSIVE at e1fcd82abba3\n" +
+				"• sandbox note: " + noRace + "\n" +
+				"• sandbox note: " + cgroups + "\n" +
+				"• sandbox: " + why + "\n" +
+				"Report: R1 (a/b)\n"},
+		{"not reproduced with cgroups off", report.Verdict{ReportID: "R1", Outcome: report.OutcomeNotReproduced,
+			Repro: &report.ReproResult{Ref: sha, Notes: []string{cgroups, "x\x1b[2J"}},
+			Notes: []string{"the PoC ran to completion and exited 0; the claimed behaviour was not observed"}},
+			"Kritolith: NOT_REPRODUCED at e1fcd82abba3\n" +
+				"• PoC ran clean at e1fcd82abba3\n" +
+				"• sandbox note: " + cgroups + "\n" +
+				"• sandbox note: x�[2J\n" +
+				"• the PoC ran to completion and exited 0; the claimed behaviour was not observed\n" +
+				"Report: R1 (a/b)\n"},
+		{"reproduced with cgroups off", report.Verdict{ReportID: "R1", Outcome: report.OutcomeReproduced,
+			Repro: &report.ReproResult{Ref: sha, Reproduced: true, Signal: "panic-in-claimed-code", ControlState: "still_reproduces",
+				Notes: []string{cgroups, cgroups}}},
+			"Kritolith: REPRODUCED at e1fcd82abba3\n" +
+				"• PoC: reproduced via panic-in-claimed-code at e1fcd82abba3\n" +
+				"• control at HEAD: still reproduces\n" +
+				pocOutputNote + "\n" +
+				"• sandbox note: " + cgroups + "\n" +
+				"Report: R1 (a/b)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Render(r, tt.v); got != tt.want {
+				t.Errorf("Render =\n%s\nwant\n%s", got, tt.want)
+			}
+		})
+	}
+}

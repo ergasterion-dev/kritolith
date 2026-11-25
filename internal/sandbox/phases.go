@@ -68,6 +68,10 @@ const (
 // than the toolchain it runs (with GOTOOLCHAIN=local it cannot switch).
 const newerGoText = "requires go >= "
 
+// reasonNoRace is the Inconclusive reason for a clean run of a PoC
+// built without -race (no C compiler in the rootfs).
+const reasonNoRace = "the PoC ran clean, but it was built without -race (the sandbox rootfs has no C compiler), so a clean run cannot rule out a data race; install a C compiler in the rootfs"
+
 const reasonNewerGo = "the repository needs a newer Go than the sandbox rootfs provides (go.mod requires go >= a version the rootfs does not have)"
 
 // attempt is the result of running the PoC at one ref.
@@ -523,6 +527,11 @@ func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, h
 	case sig.Reason == ReasonPassed:
 		switch passedAllRequested(p, out.Output) {
 		case "":
+			if !race {
+				// A clean run without the race detector says nothing
+				// about a data race: a sandbox gap, never a negative.
+				return a.fail(reasonNoRace)
+			}
 			a.passed = true
 			return a
 		case ReasonSkipped:
