@@ -47,9 +47,9 @@ func TestRunnerForbiddenIsCopied(t *testing.T) {
 	data := filepath.Join(t.TempDir(), "data")
 	fx := newFixture(t, map[string]step{"ref/run": stepPass})
 	fx.runner.WithForbidden(data)
-	spec := fx.runner.runSpec([]string{"true"}, nil, "/src", nil, false, 1, 1)
+	spec := fx.runner.runSpec([]string{"true"}, nil, "/src", nil, "", 1, 1)
 	spec.Container.Forbidden[0] = "/elsewhere"
-	if again := fx.runner.runSpec([]string{"true"}, nil, "/src", nil, false, 1, 1); again.Container.Forbidden[0] != data {
+	if again := fx.runner.runSpec([]string{"true"}, nil, "/src", nil, "", 1, 1); again.Container.Forbidden[0] != data {
 		t.Fatalf("Forbidden after a caller edit = %v", again.Container.Forbidden)
 	}
 }

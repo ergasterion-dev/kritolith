@@ -242,6 +242,7 @@ func TestRunnerBeforeContainers(t *testing.T) {
 				scratch = tt.scratch
 			}
 			fx.runner = NewRunner(cfg, fx.src, d, scratch)
+			fx.runner.bridge = fx.bridges
 			ref := refSHA
 			if tt.ref != "" {
 				ref = tt.ref

@@ -631,8 +631,10 @@ func evalBestEffort(p string) string {
 
 // SweepOrphans removes what a crashed or interrupted earlier run left
 // behind in workDir: runsc containers named kritolith-* whose bundle
-// dir is gone or older than this process, and kritolith-* directories
-// directly in workDir older than this process. It never follows a
+// dir is gone or older than this process, kritolith-* directories
+// directly in workDir older than this process, and the fetch bridges
+// (network namespaces and veth pairs named kvc<id>/kvb<id>) whose
+// marker files are in workDir/fetch-bridges. It never follows a
 // symlink and touches nothing else.
 //
 // Call it once at startup, before creating the driver for workDir: it
@@ -670,6 +672,11 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 		}
 	}
 	if err := unmountNullNetns(filepath.Join(workDir, runscStateDir)); err != nil {
+		errs = append(errs, err)
+	}
+	// Fetch bridges (namespaces kvc*/kvb*, their veth pair) left by a
+	// run of this work dir, found through its marker files.
+	if err := sweepBridges(workDir); err != nil {
 		errs = append(errs, err)
 	}
 	ents, err := os.ReadDir(workDir)

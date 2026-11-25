@@ -201,14 +201,16 @@ func (r *Runner) tmpfsMB() int {
 	return mb
 }
 
-func (r *Runner) runSpec(args, env []string, cwd string, mounts []Mount, network bool, timeoutSec, fileSizeKB int) RunSpec {
+// runSpec builds one container's spec. netns is the fetch bridge's
+// container namespace; only a spec with one gets network access.
+func (r *Runner) runSpec(args, env []string, cwd string, mounts []Mount, netns string, timeoutSec, fileSizeKB int) RunSpec {
 	cpuSec := timeoutSec*r.cfg.CPUs + 10
 	if cpuSec > maxCPUSeconds {
 		cpuSec = maxCPUSeconds
 	}
 	return RunSpec{
 		Container: ContainerSpec{
-			Rootfs: r.cfg.Rootfs, Args: args, Env: env, Cwd: cwd, Mounts: mounts, Network: network,
+			Rootfs: r.cfg.Rootfs, Args: args, Env: env, Cwd: cwd, Mounts: mounts, Network: netns != "", NetnsPath: netns,
 			MemoryMB: r.cfg.MemoryMB, CPUs: r.cfg.CPUs, PIDs: r.cfg.PIDs,
 			CPUSeconds: cpuSec, FileSizeKB: fileSizeKB, UID: r.uid, GID: r.gid,
 			Forbidden: append([]string(nil), r.forbidden...),
@@ -220,16 +222,18 @@ func (r *Runner) runSpec(args, env []string, cwd string, mounts []Mount, network
 
 func ctrDir(rel string) string { return path.Join(ctrSrc, rel) }
 
-// fetchSpec: `go mod download` in the module root, network on, source
-// and module cache writable, no PoC anywhere in the container.
-func (r *Runner) fetchSpec(l layout, modRoot string) RunSpec {
+// fetchSpec: `go mod download` in the module root, source and module
+// cache writable, no PoC anywhere in the container. The container joins
+// the fetch bridge's namespace and uses its forwarder as GOPROXY: the
+// configured proxy is reached only through it.
+func (r *Runner) fetchSpec(l layout, modRoot string, b fetchBridge) RunSpec {
 	mounts := []Mount{
 		{Source: l.src, Dest: ctrSrc, Writable: true},
 		{Source: l.modcache, Dest: ctrModCache, Writable: true},
 		{Dest: ctrTmp, Tmpfs: true, Writable: true, SizeMB: r.tmpfsMB()},
 	}
-	return r.runSpec([]string{"go", "mod", "download"}, fetchEnv(r.cfg.GoProxy), ctrDir(modRoot), mounts,
-		true, r.cfg.FetchTimeoutSeconds, fetchFileSizeKB)
+	return r.runSpec([]string{"go", "mod", "download"}, fetchEnv(b.ProxyURL()), ctrDir(modRoot), mounts,
+		b.NetnsPath(), r.cfg.FetchTimeoutSeconds, fetchFileSizeKB)
 }
 
 // buildArgs is the build command run in the module root.
@@ -273,7 +277,7 @@ func (r *Runner) buildSpec(l layout, args []string, modRoot string, race bool) R
 		{Source: l.tmp, Dest: ctrTmp, Writable: true},
 		{Source: l.out, Dest: ctrOut, Writable: true},
 	}
-	return r.runSpec(args, buildEnv(race), ctrDir(modRoot), mounts, false, r.cfg.BuildTimeoutSeconds, buildFileSizeKB)
+	return r.runSpec(args, buildEnv(race), ctrDir(modRoot), mounts, "", r.cfg.BuildTimeoutSeconds, buildFileSizeKB)
 }
 
 // runArgs is the command line of the built PoC. Every name that ends
@@ -328,7 +332,7 @@ func (r *Runner) runPhaseSpec(l layout, args []string, dir string) RunSpec {
 		{Source: l.runout, Dest: ctrOut, Writable: true},
 		{Dest: ctrTmp, Tmpfs: true, Writable: true, SizeMB: r.tmpfsMB()},
 	}
-	return r.runSpec(args, runEnv(), ctrDir(dir), mounts, false, r.cfg.RunTimeoutSeconds, runFileSizeKB)
+	return r.runSpec(args, runEnv(), ctrDir(dir), mounts, "", r.cfg.RunTimeoutSeconds, runFileSizeKB)
 }
 
 // raceAvailable reports, once per Runner, whether the rootfs has a C
@@ -441,7 +445,10 @@ func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, h
 	if err := r.ownScratch(work); err != nil {
 		return a.fail("could not hand the scratch directory to the sandbox user")
 	}
-	out, err := r.d.Run(ctx, r.fetchSpec(l, modRoot))
+	out, why, err := r.fetch(ctx, a, l, modRoot)
+	if why != "" {
+		return a.fail(why)
+	}
 	a.record(PhaseFetch, out.Output)
 	if err != nil || out.TimedOut || out.OOM || out.ExitCode != 0 {
 		return a.fail(phaseFailure(ctx, PhaseFetch, out, err))
@@ -528,6 +535,34 @@ func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, h
 		return a.fail("no test ran (the PoC's tests may be excluded by build constraints or a GOOS/GOARCH file name)")
 	}
 	return a.fail(sig.Detail)
+}
+
+// fetch runs the fetch container behind a fresh fetch bridge and tears
+// the bridge down before it returns, on every path. why is set when
+// the bridge could not be built; the fetch then never ran.
+func (r *Runner) fetch(ctx context.Context, a *attempt, l layout, modRoot string) (out RunOutput, why string, err error) {
+	if r.bridge == nil {
+		return RunOutput{}, "the fetch phase has no network bridge, so it cannot reach the module proxy", nil
+	}
+	b, berr := r.bridge.Open(ctx, r.cfg.GoProxy)
+	if berr != nil || b == nil {
+		if ctx.Err() != nil {
+			return RunOutput{}, fmt.Sprintf("the %s phase was cancelled", PhaseFetch), nil
+		}
+		reason := "unknown error"
+		if berr != nil {
+			reason = report.Printable(berr.Error())
+		}
+		return RunOutput{}, "the fetch phase's network bridge could not be set up, so the module proxy is unreachable: " + reason, nil
+	}
+	defer func() {
+		if cerr := b.Close(); cerr != nil {
+			slog.Warn("sandbox: fetch bridge not fully removed; the next start sweeps it", "error", cerr)
+			a.notes = append(a.notes, "the fetch bridge could not be fully removed; it is swept at the next start")
+		}
+	}()
+	out, err = r.d.Run(ctx, r.fetchSpec(l, modRoot, b))
+	return out, "", err
 }
 
 // inconclusiveReason is the reason of an *Inconclusive, or the printable

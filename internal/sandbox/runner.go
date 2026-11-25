@@ -122,6 +122,9 @@ type Runner struct {
 	chown         bool
 	ignoreCgroups bool
 	closer        func() error
+	// bridge builds the fetch phase's network bridge; nil means the
+	// fetch phase has no network and ends INCONCLUSIVE.
+	bridge bridgeProvider
 
 	raceOnce  sync.Once
 	race      bool
@@ -186,6 +189,7 @@ func newProduction(cfg config.Sandbox, src Source, resolve SourceResolver, workD
 	r.resolve = resolve
 	r.ignoreCgroups = ignoreCgroups
 	r.closer = d.Close
+	r.bridge = newHostBridges(d.workDir)
 	return r, nil
 }
 

@@ -125,8 +125,11 @@ func TestRunnerContainerSpecs(t *testing.T) {
 					if want := "GOCACHE,GOENV,GOFLAGS,GOMODCACHE,GOPATH,GOPROXY,GOTOOLCHAIN,GOWORK,HOME,PATH,TMPDIR"; keys(env) != want {
 						t.Errorf("fetch env keys = %s, want %s", keys(env), want)
 					}
-					if env["GOPROXY"] != cfg.GoProxy || env["GOFLAGS"] != "-mod=mod -modcacherw" || env["GOTOOLCHAIN"] != "local" || env["GOWORK"] != "off" {
+					if env["GOPROXY"] != fakeBridgeURL || env["GOFLAGS"] != "-mod=mod -modcacherw" || env["GOTOOLCHAIN"] != "local" || env["GOWORK"] != "off" {
 						t.Errorf("fetch env = %v", env)
+					}
+					if ctr.NetnsPath != fakeBridgeNetns {
+						t.Errorf("fetch netns %q, want the bridge's %q", ctr.NetnsPath, fakeBridgeNetns)
 					}
 					if strings.Join(ctr.Args, " ") != "go mod download" || ctr.Cwd != ctrSrc {
 						t.Errorf("fetch args %q cwd %q", ctr.Args, ctr.Cwd)

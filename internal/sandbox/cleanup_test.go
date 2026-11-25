@@ -163,6 +163,7 @@ func TestRunnerRefusesProxyList(t *testing.T) {
 		cfg := testCfg(fx.rootfs)
 		cfg.GoProxy = p
 		fx.runner = NewRunner(cfg, fx.src, fx.drv, fx.scratch)
+		fx.runner.bridge = fx.bridges
 		res := fx.runner.Run(context.Background(), Request{Report: report.Report{PoC: testPoC}, ResolvedRef: refSHA})
 		if !strings.Contains(res.Skipped, "goproxy") || len(fx.drv.calls) != 0 {
 			t.Errorf("%s: Skipped %q, %d containers", p, res.Skipped, len(fx.drv.calls))

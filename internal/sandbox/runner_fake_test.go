@@ -282,6 +282,7 @@ func testCfg(rootfs string) config.Sandbox {
 type fixture struct {
 	src     *fakeSource
 	drv     *fakeDriver
+	bridges *fakeBridges
 	runner  *Runner
 	scratch string
 	rootfs  string
@@ -293,7 +294,10 @@ func newFixture(t *testing.T, script map[string]step) *fixture {
 	scratch := t.TempDir()
 	src := &fakeSource{trees: map[string]map[string]string{refSHA: baseTree(), headSHA: baseTree()}, head: headSHA}
 	drv := &fakeDriver{t: t, script: script, pocName: "poc_test.go"}
-	return &fixture{src: src, drv: drv, runner: NewRunner(testCfg(rootfs), src, drv, scratch), scratch: scratch, rootfs: rootfs}
+	fb := &fakeBridges{drv: drv}
+	r := NewRunner(testCfg(rootfs), src, drv, scratch)
+	r.bridge = fb
+	return &fixture{src: src, drv: drv, bridges: fb, runner: r, scratch: scratch, rootfs: rootfs}
 }
 
 func (fx *fixture) run(t *testing.T, req Request) Result {

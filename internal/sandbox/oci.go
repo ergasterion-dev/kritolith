@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -30,11 +31,14 @@ type ContainerSpec struct {
 	Env    []string
 	Cwd    string
 	Mounts []Mount
-	// Network records that the caller wants network access. It does not
-	// change the OCI config: the network namespace is always a fresh,
-	// empty one, and access is granted by the runtime's network flag
-	// (see the runner), never by joining a host namespace.
-	Network                bool
+	// Network asks for network access (the runtime's --network=sandbox).
+	// It needs NetnsPath: a container with network but no prepared
+	// namespace is refused, so nothing silently runs in an empty one.
+	Network bool
+	// NetnsPath is the fetch bridge's container namespace
+	// (/run/netns/kvc<8 hex>) that the container joins. Empty means a
+	// fresh, empty network namespace (build and run).
+	NetnsPath              string
 	MemoryMB, CPUs, PIDs   int
 	CPUSeconds, FileSizeKB int
 	UID, GID               int
@@ -241,9 +245,40 @@ func checkBindAliases(ms []Mount) error {
 	return nil
 }
 
+// netnsNameRe is the only namespace a container may join: the
+// container side of a fetch bridge.
+var netnsNameRe = regexp.MustCompile(`^kvc[0-9a-f]{8}$`)
+
+// checkNetns validates ContainerSpec's network settings: Network and
+// NetnsPath come together, and the path is a clean, absolute fetch
+// bridge namespace directly under /run/netns or /var/run/netns.
+func checkNetns(network bool, p string) error {
+	switch {
+	case network && p == "":
+		return errors.New("network access needs a prepared network namespace (the fetch bridge)")
+	case !network && p != "":
+		return errors.New("a network namespace path without network access")
+	case p == "":
+		return nil
+	}
+	if strings.ContainsRune(p, 0) || !strings.HasPrefix(p, "/") || hasDotDot(p) || filepath.Clean(p) != p {
+		return fmt.Errorf("network namespace path %q must be absolute and clean", p)
+	}
+	if d := filepath.Dir(p); d != "/run/netns" && d != "/var/run/netns" {
+		return fmt.Errorf("network namespace path %q is not under /run/netns", p)
+	}
+	if !netnsNameRe.MatchString(filepath.Base(p)) {
+		return fmt.Errorf("network namespace path %q is not a fetch bridge namespace", p)
+	}
+	return nil
+}
+
 func validate(s ContainerSpec) ([]string, error) {
 	if len(s.Args) == 0 {
 		return nil, errors.New("no command")
+	}
+	if err := checkNetns(s.Network, s.NetnsPath); err != nil {
+		return nil, err
 	}
 	if strings.ContainsRune(s.Cwd, 0) || !strings.HasPrefix(s.Cwd, "/") || hasDotDot(s.Cwd) || filepath.Clean(s.Cwd) != s.Cwd {
 		return nil, errors.New("cwd must be absolute and clean")
@@ -357,8 +392,9 @@ func BuildOCI(s ContainerSpec) ([]byte, error) {
 		Hostname: "kritolith",
 		Mounts:   mounts,
 		Linux: ociLinux{
-			// No namespace carries a path, so each is created fresh.
-			Namespaces: []ociNamespace{{Type: "pid"}, {Type: "network"}, {Type: "ipc"}, {Type: "uts"}, {Type: "mount"}},
+			// Only the network namespace may carry a path (the fetch
+			// bridge's, checked by validate); every other is created fresh.
+			Namespaces: []ociNamespace{{Type: "pid"}, {Type: "network", Path: s.NetnsPath}, {Type: "ipc"}, {Type: "uts"}, {Type: "mount"}},
 			Devices:    []ociDevice{chr("/dev/null", 3), chr("/dev/zero", 5), chr("/dev/urandom", 9), chr("/dev/tty", 0)},
 			Resources: ociResources{
 				Memory: ociMemory{Limit: int64(s.MemoryMB) << 20},

@@ -102,6 +102,9 @@ func TestBuildOCINoHostPathLeaks(t *testing.T) {
 	for _, network := range []bool{false, true} {
 		s := goodSpec()
 		s.Network = network
+		if network {
+			s.NetnsPath = "/run/netns/kvc0123abcd"
+		}
 		b, err := BuildOCI(s)
 		if err != nil {
 			t.Fatal(err)
@@ -201,13 +204,89 @@ func TestBuildOCIReadOnlyByDefault(t *testing.T) {
 	}
 }
 
-func TestBuildOCINetworkFlagDoesNotChangeConfig(t *testing.T) {
-	a, b := goodSpec(), goodSpec()
-	b.Network = true
-	x, err1 := BuildOCI(a)
-	y, err2 := BuildOCI(b)
-	if err1 != nil || err2 != nil || string(x) != string(y) {
-		t.Fatal("config differs with Network flag")
+// With a bridge namespace the only change is the network namespace's
+// path; without one the config is unchanged and no namespace joins a
+// path.
+func TestBuildOCINetnsPath(t *testing.T) {
+	plain, err := BuildOCI(goodSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/run/netns/kvc0123abcd", "/var/run/netns/kvcdeadbeef"} {
+		s := goodSpec()
+		s.Network, s.NetnsPath = true, p
+		b, err := BuildOCI(s)
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		var o ociConfig
+		if err := json.Unmarshal(b, &o); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range o.Linux.Namespaces {
+			switch {
+			case n.Type == "network" && n.Path != p:
+				t.Errorf("network namespace path = %q, want %q", n.Path, p)
+			case n.Type != "network" && n.Path != "":
+				t.Errorf("namespace %s joins %q", n.Type, n.Path)
+			}
+		}
+		if got := strings.Replace(string(b), `,
+        "path": "`+p+`"`, "", 1); got != string(plain) {
+			t.Errorf("%s: config differs beyond the namespace path:\n%s", p, b)
+		}
+	}
+}
+
+// Network without a prepared namespace, a namespace without network,
+// and every hostile namespace path are refused.
+func TestBuildOCIRejectsBadNetns(t *testing.T) {
+	cases := map[string]struct {
+		network bool
+		path    string
+	}{
+		"network without netns": {true, ""},
+		"netns without network": {false, "/run/netns/kvc0123abcd"},
+		"relative":              {true, "run/netns/kvc0123abcd"},
+		"dotdot":                {true, "/run/netns/../netns/kvc0123abcd"},
+		"dot":                   {true, "/run/netns/./kvc0123abcd"},
+		"double slash":          {true, "/run//netns/kvc0123abcd"},
+		"trailing slash":        {true, "/run/netns/kvc0123abcd/"},
+		"nul":                   {true, "/run/netns/kvc0123abcd\x00"},
+		"host netns":            {true, "/proc/1/ns/net"},
+		"self netns":            {true, "/proc/self/ns/net"},
+		"other dir":             {true, "/tmp/netns/kvc0123abcd"},
+		"nested":                {true, "/run/netns/x/kvc0123abcd"},
+		"bridge side":           {true, "/run/netns/kvb0123abcd"},
+		"other name":            {true, "/run/netns/default"},
+		"upper hex":             {true, "/run/netns/kvc0123ABCD"},
+		"short id":              {true, "/run/netns/kvc0123abc"},
+		"long id":               {true, "/run/netns/kvc0123abcde"},
+		"suffix":                {true, "/run/netns/kvc0123abcd-x"},
+		"newline":               {true, "/run/netns/kvc0123abcd\n"},
+		"netns dir itself":      {true, "/run/netns"},
+		"var run nested dotdot": {true, "/var/run/netns/../../proc/1/ns/net"},
+		"root":                  {true, "/"},
+		"space":                 {true, "/run/netns/kvc0123abc "},
+		"symlinkish dir":        {true, "/run/netns/kvc0123abcd/x"},
+		"unicode":               {true, "/run/netns/kvc0123abcé"},
+		"empty with no network": {false, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := goodSpec()
+			s.Network, s.NetnsPath = c.network, c.path
+			_, err := BuildOCI(s)
+			if name == "empty with no network" {
+				if err != nil {
+					t.Fatalf("plain spec refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("network=%v netns=%q accepted", c.network, c.path)
+			}
+		})
 	}
 }
 
