@@ -276,7 +276,12 @@ func TestVerdictRoundTrip(t *testing.T) {
 			{Kind: report.ClaimFile, Value: "http2/frame.go", Source: "deterministic", Verified: report.TriYes, Evidence: "found"},
 		},
 		Duplicates: []report.DupMatch{{AdvisoryID: "GHSA-xxxx", Score: 0.91}},
-		Repro:      &report.ReproResult{Ref: r.ClaimedRef, Signal: "none"},
+		Repro: &report.ReproResult{
+			Ref: r.ClaimedRef, Signal: "none", Phase: "control", Shape: "test", ControlState: "fixed",
+			Control:   &report.ReproResult{Ref: "fixed-ref", Signal: "none"},
+			LogSHA256: map[string]string{"run": "ab12"},
+			Notes:     []string{"n"},
+		},
 		Notes:      []string{"grounding failed on a hard claim"},
 		DraftReply: "draft",
 		Signature:  []byte{1, 2, 3},

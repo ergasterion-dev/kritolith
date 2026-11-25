@@ -145,6 +145,18 @@ type ReproResult struct {
 	Ref        string `json:"ref"`
 	Reproduced bool   `json:"reproduced"`
 	Signal     string `json:"signal"`
+
+	// Control is the same PoC run at the fixed ref, when one was available.
+	Control *ReproResult `json:"control,omitempty"`
+	// Phase is the phase that ended the run: fetch|build|run|control.
+	Phase string `json:"phase,omitempty"`
+	// Shape is the PoC shape: test|program|fuzz.
+	Shape string `json:"shape,omitempty"`
+	// LogSHA256 maps a phase to the hex SHA-256 of its captured log.
+	LogSHA256 map[string]string `json:"log_sha256,omitempty"`
+	Notes     []string          `json:"notes,omitempty"`
+	// ControlState is ""|fixed|still_reproduces|unavailable.
+	ControlState string `json:"control_state,omitempty"`
 }
 
 // Verdict is Kritolith's evidence summary for one report.
