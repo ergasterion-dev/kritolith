@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/ergasterion-dev/kritolith/internal/llm"
 	"github.com/ergasterion-dev/kritolith/internal/notify"
@@ -102,20 +103,44 @@ func (s Sandbox) Validate() error {
 	if s.Rootfs != "" && !filepath.IsAbs(s.Rootfs) {
 		return fmt.Errorf("sandbox.rootfs %q must be an absolute path", s.Rootfs)
 	}
+	if s.Rootfs != "" && filepath.Clean(s.Rootfs) != s.Rootfs {
+		return fmt.Errorf("sandbox.rootfs %q must be a clean path (no .., no trailing slash)", s.Rootfs)
+	}
 	if s.GoProxy != "" {
-		u, err := url.Parse(s.GoProxy)
-		if err != nil || u.Hostname() == "" {
-			return fmt.Errorf("sandbox.goproxy %q is not a valid URL", s.GoProxy)
+		if err := ValidateGoProxy(s.GoProxy); err != nil {
+			return fmt.Errorf("sandbox.goproxy: %w", err)
 		}
-		switch u.Scheme {
-		case "https":
-		case "http":
-			if !isLoopback(u.Hostname()) {
-				return fmt.Errorf("sandbox.goproxy %q: http is only allowed for loopback hosts", s.GoProxy)
-			}
-		default:
-			return fmt.Errorf("sandbox.goproxy %q must be https:// (or http:// to loopback)", s.GoProxy)
+	}
+	return nil
+}
+
+// ValidateGoProxy checks a GOPROXY value for the sandbox's fetch phase:
+// exactly one proxy URL, never a list (',' or '|'), never the keywords
+// "direct" or "off", never file://; https, or http only to a loopback
+// host; no userinfo, query or fragment. A list could fall back to
+// "direct", which would let `go mod download` reach any VCS host.
+func ValidateGoProxy(p string) error {
+	if p == "" || strings.ContainsAny(p, ",|") || strings.IndexFunc(p, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("%q must be a single proxy URL (no list, no whitespace)", p)
+	}
+	if p == "direct" || p == "off" {
+		return fmt.Errorf("%q: the sandbox needs a proxy, not %q", p, p)
+	}
+	u, err := url.Parse(p)
+	if err != nil || u.Hostname() == "" || u.Opaque != "" {
+		return fmt.Errorf("%q is not a valid URL", p)
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(p, "#") {
+		return fmt.Errorf("%q must not carry userinfo, a query or a fragment", p)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !isLoopback(u.Hostname()) {
+			return fmt.Errorf("%q: http is only allowed for loopback hosts", p)
 		}
+	default:
+		return fmt.Errorf("%q must be https:// (or http:// to loopback)", p)
 	}
 	return nil
 }

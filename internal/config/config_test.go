@@ -120,6 +120,21 @@ func TestSandboxRejects(t *testing.T) {
 		{"ftp proxy", `{"sandbox":{"goproxy":"ftp://example.org"}}`, "goproxy"},
 		{"no scheme proxy", `{"sandbox":{"goproxy":"proxy.golang.org"}}`, "goproxy"},
 		{"proxy no host", `{"sandbox":{"goproxy":"https://"}}`, "goproxy"},
+		{"proxy list with direct", `{"sandbox":{"goproxy":"https://p.org/x,direct"}}`, "goproxy"},
+		{"proxy pipe list", `{"sandbox":{"goproxy":"https://p.org|https://q.org"}}`, "goproxy"},
+		{"proxy keyword direct", `{"sandbox":{"goproxy":"direct"}}`, "goproxy"},
+		{"proxy keyword off", `{"sandbox":{"goproxy":"off"}}`, "goproxy"},
+		{"proxy file url", `{"sandbox":{"goproxy":"file:///var/cache"}}`, "goproxy"},
+		{"proxy whitespace", `{"sandbox":{"goproxy":"https://p.org/ x"}}`, "goproxy"},
+		{"proxy userinfo", `{"sandbox":{"goproxy":"https://u:p@host"}}`, "goproxy"},
+		{"proxy query", `{"sandbox":{"goproxy":"https://host/x?y"}}`, "goproxy"},
+		{"proxy empty query", `{"sandbox":{"goproxy":"https://host/x?"}}`, "goproxy"},
+		{"proxy fragment", `{"sandbox":{"goproxy":"https://host/x#f"}}`, "goproxy"},
+		{"proxy loopback-looking host", `{"sandbox":{"goproxy":"http://127.0.0.1.evil.com"}}`, "goproxy"},
+		{"proxy localhost-looking host", `{"sandbox":{"goproxy":"http://localhost.evil.com"}}`, "goproxy"},
+		{"proxy loopback userinfo", `{"sandbox":{"goproxy":"http://127.0.0.1@evil.com"}}`, "goproxy"},
+		{"rootfs not clean", `{"sandbox":{"rootfs":"/x/../y"}}`, "rootfs"},
+		{"rootfs trailing slash", `{"sandbox":{"rootfs":"/x/"}}`, "rootfs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,9 +147,22 @@ func TestSandboxRejects(t *testing.T) {
 }
 
 func TestSandboxAcceptsProxies(t *testing.T) {
-	for _, u := range []string{"https://proxy.golang.org", "http://127.0.0.1:3000", "http://localhost:3000", "http://[::1]:3000"} {
+	for _, u := range []string{"https://proxy.golang.org", "https://goproxy.example.org/mirror/", "http://127.0.0.1:3000", "http://localhost:3000", "http://[::1]:3000"} {
 		if _, err := Load(writeConfig(t, `{"sandbox":{"goproxy":"`+u+`"}}`)); err != nil {
 			t.Errorf("%s: %v", u, err)
+		}
+	}
+}
+
+func TestValidateGoProxy(t *testing.T) {
+	for _, u := range []string{"https://proxy.golang.org", "http://127.0.0.1:3000"} {
+		if err := ValidateGoProxy(u); err != nil {
+			t.Errorf("ValidateGoProxy(%q) = %v, want nil", u, err)
+		}
+	}
+	for _, u := range []string{"", "https://p.org/x,direct", "direct", "off", "file:///x", "https://u:p@host", "https://host/x?y", "http://127.0.0.1@evil.com", " https://p.org"} {
+		if err := ValidateGoProxy(u); err == nil {
+			t.Errorf("ValidateGoProxy(%q) = nil, want an error", u)
 		}
 	}
 }
