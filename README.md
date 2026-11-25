@@ -19,7 +19,7 @@ Reproducing the PoC in a locked-down sandbox is next on the roadmap.
 </div>
 
 > [!WARNING]
-> **Kritolith is pre-alpha.** `kritolith check` works today for Go projects: it extracts the claims in a report, checks them against the repository at the claimed commit, and looks for duplicates. It does **not** run PoC code yet, so it cannot say whether a report reproduces. Read the [threat model](docs/threat-model.md), including its list of known gaps, before pointing it at a real embargoed report.
+> **Kritolith is pre-alpha.** `kritolith check` works today for Go projects: it extracts the claims in a report, checks them against the repository at the claimed commit, and looks for duplicates. When a sandbox is configured (Linux, root, gVisor), it also builds and runs a supplied PoC in gVisor and reports whether it reproduced; the sandbox has run on a real runsc, but the hostile-input suite has not yet passed in full there. Read the [threat model](docs/threat-model.md), including its list of known gaps, before pointing it at a real embargoed report.
 
 ## Try it
 
@@ -75,7 +75,7 @@ flowchart LR
 | **Sandbox** | Builds and runs the PoC under [gVisor](https://gvisor.dev) with no network, hard CPU/memory/PID limits, and a control run at `HEAD`. |
 | **Verdict** | Writes a short, factual verdict plus an evidence bundle signed with ed25519, so anyone can check it wasn't altered. |
 
-**Built today:** intake from a local file, a raw email message, or one GitHub advisory at a time; extract, ground, dedupe, and signed verdicts. **Not built yet:** the sandbox, which is what will reproduce a PoC. See [Roadmap](#roadmap).
+**Built today:** intake from a local file, a raw email message, or one GitHub advisory at a time; extract, ground, dedupe, and signed verdicts. **Built, still being hardened:** the gVisor sandbox that reproduces a PoC (see [docs/sandbox.md](docs/sandbox.md)). On the corpus, 15 of 20 real PoC reports reproduce with it. See [Roadmap](#roadmap).
 
 ## Verdicts
 

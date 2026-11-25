@@ -154,10 +154,15 @@ These are real and not yet fixed.
 - **`kritolith osv sync` indexes one Go package per advisory.** An advisory that affects several modules is found only under the first.
 - **Fuzzing is not continuous.** The fuzz targets below run as ordinary tests on their seed inputs in CI. Longer runs are manual.
 
-## Not built yet, and the rules it must meet
+## Sandbox: what it does and does not guarantee
 
-- **Sandbox.** PoC code will be built and run under gVisor with no network in the build and run phases, a read-only source tree, and limits on time, memory, CPU, process count and output size. The signing key, GitHub App key, Docker socket and host environment never enter it. A crash counts as reproduced only if the claimed function is in the stack or race report. Until this exists, Kritolith does not run PoCs at all.
-- **Key isolation from the sandbox.** The signing key must never be readable from inside a sandbox. Today nothing runs reporter code, so there is nothing to isolate it from.
+PoC code is built and run under gVisor with no network in the build and run phases, a read-only source tree, and limits on time, memory, CPU, process count and output size. The signing key, GitHub App key, Docker socket and host environment never enter it. The details and the first-run results are in [sandbox.md](sandbox.md).
+
+- **A hostile PoC controls its own output.** It can print a fake panic trace or race report that names the claimed function. The sandbox cannot tell that from a real one. The effect is limited to a false `REPRODUCED`: a sandbox failure is always `INCONCLUSIVE`, so it can never cause a rejection. Verdict text tells the maintainer to read the PoC before trusting a reproduction.
+- **`Outcome` is authoritative.** A fall-through `INCONCLUSIVE` can still carry `Repro.Reproduced: true`; read the outcome, not that field.
+- **Fetch has a network, through a bridge.** Only `go mod download` runs with a network, over a private link to an in-process forwarder that relays to the configured Go proxy and to `https://sum.golang.org` and nothing else. The PoC is not in the container then. The forwarder's own parsing of container requests is attack surface.
+- **gVisor is not a microVM.** It still uses a small set of host syscalls; a gVisor bug is a host bug. The sandbox needs root to create namespaces.
+- **Key isolation.** The signing key is never mounted or passed into a container; the data directory is refused as a bind source.
 
 ## Fuzz targets
 

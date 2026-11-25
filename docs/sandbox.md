@@ -4,7 +4,7 @@ Kritolith runs a reporter's proof of concept inside gVisor (`runsc`). For each r
 
 This page covers what the operator has to set up, the config keys, what the sandbox does and does not isolate, and how to run the integration tests.
 
-> Status: the code and its unit tests are done. The `TestProbe*` integration tests pass on a real runsc (20261102.0, Ubuntu 24.04 arm64). The rest of the `sandbox`-tagged suite (`internal/sandbox/integration_test.go`) has not yet passed in full on a real runsc. The [first run checklist](#first-run-checklist) lists what is still open. Until it is complete, do not run Kritolith on real embargoed reports.
+> Status: the code, its unit tests and the `TestProbe*` integration tests pass on a real runsc (20261102.0, Ubuntu 24.04 arm64). On that host the corpus eval reproduces 15 of 20 real PoC reports. The hostile-fixture suite (`TestSandboxHostileFixtures`) and the whole-branch security review have not been re-run since the fixes from the first real-runsc run; do not run Kritolith on real embargoed reports until they pass.
 
 ## Requirements
 

@@ -1,6 +1,6 @@
 # Installing Kritolith
 
-Kritolith is one static binary. It needs `git` at run time and nothing else for the checks that work today (intake, claim extraction, grounding, duplicate detection, signed verdicts). The sandbox is not built yet, so no container runtime is needed.
+Kritolith is one static binary. It needs `git` at run time and nothing else for the checks that work today (intake, claim extraction, grounding, duplicate detection, signed verdicts). Reproducing a PoC needs the sandbox: Linux, root, `runsc` (gVisor), iproute2 and a Go rootfs, as set up in [sandbox.md](sandbox.md). Without it, reports that carry a PoC end `INCONCLUSIVE` and everything else works as above.
 
 ## Requirements
 
