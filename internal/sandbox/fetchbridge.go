@@ -27,7 +27,9 @@ import (
 // in-process HTTP forwarder. The pair has no default route, the host
 // does no forwarding and no NAT, so the only thing the container can
 // reach is that socket. The forwarder relays GET and HEAD requests to
-// the one configured proxy from the host's own namespace. Keeping the
+// the one configured proxy, and /sumdb/sum.golang.org/ requests to the
+// fixed checksum database (sumdbUpstream), from the host's own
+// namespace. Keeping the
 // host end out of the root namespace matters: otherwise the container
 // could reach every host service bound to the wildcard address at that
 // IP.
@@ -165,6 +167,18 @@ const (
 	fwdMaxHeaderBytes = 64 << 10
 )
 
+// The checksum database go uses by default (GOSUMDB is left at its
+// default). go asks the proxy <proxy>/sumdb/sum.golang.org/supported
+// and, on 200, fetches the database through <proxy>/sumdb/sum.golang.org/;
+// the forwarder answers the first itself and relays the rest here.
+// go verifies the database's signed tree heads with its built-in key,
+// so the relay cannot forge entries.
+const (
+	sumdbUpstream      = "https://sum.golang.org"
+	sumdbPrefix        = "/sumdb/sum.golang.org/"
+	sumdbSupportedPath = sumdbPrefix + "supported"
+)
+
 // fwdRequestHeaders are the only request headers passed upstream.
 var fwdRequestHeaders = []string{"Accept", "Accept-Encoding", "User-Agent"}
 
@@ -175,7 +189,11 @@ var fwdResponseHeaders = []string{"Content-Type", "Content-Length", "Content-Enc
 // only, to one upstream, for one client IP.
 type forwarder struct {
 	upstream *url.URL
-	client   *http.Client
+	// sumdb is the checksum database the forwarder relays
+	// /sumdb/sum.golang.org/ to: sumdbUpstream, never taken from config
+	// or a request. Tests point it at a local server.
+	sumdb  *url.URL
+	client *http.Client
 	// maxResp and maxTotal are fwdMaxResponse and fwdMaxTotal; tests
 	// lower them.
 	maxResp, maxTotal int64
@@ -208,7 +226,11 @@ func newForwarder(upstream string, rt http.RoundTripper) (*forwarder, error) {
 			ForceAttemptHTTP2:      true,
 		}
 	}
-	f := &forwarder{upstream: u, maxResp: fwdMaxResponse, maxTotal: fwdMaxTotal, done: make(chan struct{})}
+	sdb, err := url.Parse(sumdbUpstream)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: sumdb upstream: %w", err)
+	}
+	f := &forwarder{upstream: u, sumdb: sdb, maxResp: fwdMaxResponse, maxTotal: fwdMaxTotal, done: make(chan struct{})}
 	f.client = &http.Client{
 		Transport: rt,
 		Timeout:   fwdRequestTimeout,
@@ -216,8 +238,10 @@ func newForwarder(upstream string, rt http.RoundTripper) (*forwarder, error) {
 			if len(via) >= fwdMaxRedirects {
 				return errors.New("too many redirects")
 			}
-			if !redirectAllowed(u, req.URL) {
-				return errors.New("redirect off the configured proxy refused")
+			// Measured against the upstream this request was first sent
+			// to: the proxy or the checksum database.
+			if !redirectAllowed(via[0].URL, req.URL) {
+				return errors.New("redirect off the upstream refused")
 			}
 			return nil
 		},
@@ -339,11 +363,27 @@ func (f *forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fetch byte budget exhausted", http.StatusForbidden)
 		return
 	}
-	// The upstream URL is the configured base plus this path and query;
-	// nothing else from the request (Host, X-Forwarded-*, absolute
-	// targets) can change where it goes.
-	target := *f.upstream
-	target.Path = strings.TrimSuffix(f.upstream.Path, "/") + p
+	// The upstream URL is a fixed base plus this path and query: the
+	// checksum database for /sumdb/sum.golang.org/..., the configured
+	// proxy for everything else. Nothing else from the request (Host,
+	// X-Forwarded-*, absolute targets) can change where it goes.
+	base, rest := f.upstream, p
+	if strings.HasPrefix(p, "/sumdb/") {
+		if p == sumdbSupportedPath {
+			// The forwarder proxies the checksum database itself, so it
+			// tells go so: go then never connects to it directly.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		sub, ok := strings.CutPrefix(p, sumdbPrefix)
+		if !ok || sub == "" {
+			http.Error(w, "unknown checksum database", http.StatusForbidden)
+			return
+		}
+		base, rest = f.sumdb, "/"+sub
+	}
+	target := *base
+	target.Path = strings.TrimSuffix(base.Path, "/") + rest
 	target.RawPath = ""
 	target.RawQuery = r.URL.RawQuery
 	target.Fragment = ""

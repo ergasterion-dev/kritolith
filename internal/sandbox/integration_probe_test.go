@@ -531,8 +531,9 @@ func TestProbeLoopbackProxyInFetchNetns(t *testing.T) {
 
 // TestProbeFetchEgressToProxy: through the fetch bridge, the fetch
 // phase reaches the public Go module proxy (the default goproxy), and
-// a real `go mod download` with dependencies succeeds, checksum
-// database included (go fetches it through the proxy's /sumdb/ path).
+// a real `go mod download` with dependencies succeeds, with go.sum and
+// without it (then the checksum database is consulted through the
+// forwarder's /sumdb/sum.golang.org/ relay).
 // Opt in with KRITOLITH_SANDBOX_INTERNET=1 on a host with internet
 // access.
 func TestProbeFetchEgressToProxy(t *testing.T) {
@@ -558,14 +559,18 @@ func TestProbeFetchEgressToProxy(t *testing.T) {
 		t.Errorf("rsc.io/quote v1.5.2 zip not in the module cache: %v", err)
 	}
 
-	// Without go.sum the go tool must ask the checksum database. It asks
-	// the proxy first (<proxy>/sumdb/sum.golang.org/supported); on 404 it
-	// connects to sum.golang.org directly, which the bridge does not
-	// allow. proxy.golang.org answered 404 there when this was checked
-	// (2026-11-25), so this case is logged, not asserted: such a
-	// repository ends INCONCLUSIVE at fetch.
-	dl, _ := p.downloadDeps(t, "deps-nosum", "")
+	// Without go.sum the go tool must ask the checksum database. It
+	// asks the proxy (<proxy>/sumdb/sum.golang.org/supported); the
+	// forwarder answers that itself and relays the lookups and tiles to
+	// https://sum.golang.org, so go never needs a direct connection.
+	dl, modcache := p.downloadDeps(t, "deps-nosum", "")
 	t.Logf("go mod download without go.sum: exit %d\n%s", dl.ExitCode, dl.Output)
+	if dl.ExitCode != 0 {
+		t.Error("go mod download without go.sum failed: the checksum database is not reachable through the fetch bridge")
+	}
+	if _, err := os.Stat(filepath.Join(modcache, "cache", "download", "sumdb", "sum.golang.org")); err != nil {
+		t.Errorf("no checksum database data in the module cache: %v", err)
+	}
 }
 
 // depsGoSum is the complete go.sum of the probe module requiring

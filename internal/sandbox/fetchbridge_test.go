@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -260,6 +261,9 @@ func TestPickSubnet(t *testing.T) {
 // with a second server that nothing may ever reach.
 type fwdEnv struct {
 	fwd           *forwarder
+	sumdb         *httptest.Server
+	sumdbHits     atomic.Int64
+	sumdbPath     string
 	addr          string
 	upstreamHits  atomic.Int64
 	otherHits     atomic.Int64
@@ -293,8 +297,22 @@ func newFwdEnv(t *testing.T, allowed string) *fwdEnv {
 		fmt.Fprint(w, "module data")
 	}))
 	t.Cleanup(e.upstream.Close)
+	e.sumdb = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.sumdbHits.Add(1)
+		e.mu.Lock()
+		e.sumdbPath = r.URL.RequestURI()
+		e.mu.Unlock()
+		fmt.Fprint(w, "tree")
+	}))
+	t.Cleanup(e.sumdb.Close)
 	fwd, err := newForwarder(e.upstream.URL+"/base", nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if fwd.sumdb.String() != sumdbUpstream || fwd.sumdb.Scheme != "https" {
+		t.Fatalf("default sumdb upstream %v", fwd.sumdb)
+	}
+	if fwd.sumdb, err = url.Parse(e.sumdb.URL + "/db"); err != nil {
 		t.Fatal(err)
 	}
 	l, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -484,5 +502,78 @@ func TestNewForwarderRejectsBadUpstream(t *testing.T) {
 		if _, err := newForwarder(u, nil); err == nil {
 			t.Errorf("newForwarder(%q) accepted", u)
 		}
+	}
+}
+
+// The checksum database: "supported" is answered locally, sum.golang.org
+// paths go to the sumdb upstream only, any other database is refused,
+// and path tricks are refused on this route too.
+func TestForwarderSumdb(t *testing.T) {
+	e := newFwdEnv(t, "127.0.0.1")
+	h := " HTTP/1.1\r\nHost: sum.golang.org\r\nConnection: close\r\n\r\n"
+	for _, m := range []string{"GET", "HEAD"} {
+		if code := e.raw(t, m+" /sumdb/sum.golang.org/supported"+h); code != 200 {
+			t.Errorf("%s supported: status %d", m, code)
+		}
+	}
+	if e.sumdbHits.Load() != 0 || e.upstreamHits.Load() != 0 {
+		t.Fatal("supported was not answered locally")
+	}
+	if code := e.raw(t, "GET /sumdb/sum.golang.org/lookup/rsc.io/quote@v1.5.2"+h); code != 200 {
+		t.Fatalf("lookup: status %d", code)
+	}
+	e.mu.Lock()
+	got := e.sumdbPath
+	e.mu.Unlock()
+	if got != "/db/lookup/rsc.io/quote@v1.5.2" || e.sumdbHits.Load() != 1 || e.upstreamHits.Load() != 0 {
+		t.Fatalf("lookup relayed to %q (sumdb hits %d, proxy hits %d)", got, e.sumdbHits.Load(), e.upstreamHits.Load())
+	}
+	if code := e.raw(t, "GET /sumdb/sum.golang.org/tile/8/0/001.p/5"+h); code != 200 {
+		t.Errorf("tile: status %d", code)
+	}
+	refused := map[string]string{
+		"other database":    "GET /sumdb/other.example/lookup/x@v1",
+		"other supported":   "GET /sumdb/other.example/supported",
+		"lookalike":         "GET /sumdb/sum.golang.org.evil.example/lookup/x",
+		"bare prefix":       "GET /sumdb/sum.golang.org/",
+		"no slash":          "GET /sumdb/sum.golang.org",
+		"dotdot out":        "GET /sumdb/sum.golang.org/../../x",
+		"dotdot in":         "GET /sumdb/other.example/../sum.golang.org/lookup/x",
+		"encoded dotdot":    "GET /sumdb/sum.golang.org/%2e%2e/x",
+		"encoded slash":     "GET /sumdb/sum.golang.org%2f..%2fx",
+		"backslash":         "GET /sumdb/sum.golang.org\\lookup",
+		"double slash":      "GET /sumdb/sum.golang.org//lookup/x",
+		"post":              "POST /sumdb/sum.golang.org/lookup/x",
+		"absolute to sumdb": "GET https://sum.golang.org/lookup/x",
+		"absolute to decoy": "GET " + e.other.URL + "/sumdb/sum.golang.org/lookup/x",
+	}
+	before := e.sumdbHits.Load()
+	for name, req := range refused {
+		t.Run(name, func(t *testing.T) {
+			if code := e.raw(t, req+h); code == 200 || (code != 0 && code < 400) {
+				t.Fatalf("status %d", code)
+			}
+		})
+	}
+	if e.sumdbHits.Load() != before || e.upstreamHits.Load() != 0 || e.otherHits.Load() != 0 {
+		t.Errorf("refused requests reached an upstream: sumdb %d, proxy %d, decoy %d",
+			e.sumdbHits.Load()-before, e.upstreamHits.Load(), e.otherHits.Load())
+	}
+}
+
+// A redirect from the checksum database is measured against the
+// checksum database, not the proxy: an http redirect to the proxy's
+// host is refused.
+func TestForwarderSumdbRedirect(t *testing.T) {
+	e := newFwdEnv(t, "127.0.0.1")
+	e.sumdb.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.sumdbHits.Add(1)
+		http.Redirect(w, r, e.other.URL+"/x", http.StatusFound)
+	})
+	if code := e.raw(t, "GET /sumdb/sum.golang.org/lookup/x@v1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"); code != http.StatusBadGateway {
+		t.Errorf("status %d", code)
+	}
+	if e.otherHits.Load() != 0 {
+		t.Error("the decoy was reached through a sumdb redirect")
 	}
 }
