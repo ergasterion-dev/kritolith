@@ -442,24 +442,99 @@ func TestProbeNoNetworkInBuildAndRun(t *testing.T) {
 	}
 }
 
+// openBridge builds a real fetch bridge (root and iproute2 required)
+// relaying to upstream, torn down when the test ends.
+func (p *probe) openBridge(t *testing.T, upstream string) fetchBridge {
+	t.Helper()
+	b, err := newHostBridges(p.d.workDir).Open(context.Background(), upstream)
+	if err != nil {
+		t.Fatalf("fetch bridge: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := b.Close(); err != nil {
+			t.Errorf("bridge Close: %v", err)
+		}
+		assertBridgeGone(t, b)
+	})
+	return b
+}
+
+// fetchSpec is a probe container in the bridge's namespace.
+func (p *probe) fetchSpec(b fetchBridge, args []string, mounts []Mount) RunSpec {
+	s := p.spec(args, mounts, true, 2*time.Minute)
+	s.Container.NetnsPath = b.NetnsPath()
+	return s
+}
+
+// assertBridgeGone checks that neither namespace nor link of b is left.
+func assertBridgeGone(t *testing.T, b fetchBridge) {
+	t.Helper()
+	ctr := filepath.Base(b.NetnsPath())
+	br := "kvb" + strings.TrimPrefix(ctr, "kvc")
+	for _, n := range []string{ctr, br} {
+		if _, err := os.Lstat(filepath.Join(netnsDir, n)); err == nil {
+			t.Errorf("network namespace %s left behind", n)
+		}
+		if _, err := net.InterfaceByName(n); err == nil {
+			t.Errorf("link %s left in the root namespace", n)
+		}
+	}
+}
+
+// bridgeHost is the forwarder's IP and port.
+func bridgeHost(t *testing.T, b fetchBridge) (string, string) {
+	t.Helper()
+	h, port, err := net.SplitHostPort(strings.TrimPrefix(b.ProxyURL(), "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, port
+}
+
 // TestProbeLoopbackProxyInFetchNetns: config accepts an http:// GOPROXY
-// on loopback (a local caching proxy). The fetch container runs in its
-// own network namespace, so its loopback may not be the host's; this
-// probe says whether such a proxy is reachable from the fetch phase.
+// on host loopback (a local caching proxy). The fetch container cannot
+// see the host's loopback; it reaches the proxy through the fetch
+// bridge's forwarder, which relays from the host side. Also: a module
+// with no dependencies downloads cleanly through the bridge.
 func TestProbeLoopbackProxyInFetchNetns(t *testing.T) {
 	p := newProbe(t, needSandbox(t))
 	bin := p.buildNetProbe(t)
 	loop, hits := countingServer(t, "127.0.0.1:0")
-	out := p.run(t, p.spec([]string{"/poc/netprobe", "dial", "http://" + loop + "/"}, []Mount{bin}, true, 2*time.Minute))
+	b := p.openBridge(t, "http://"+loop)
+	out := p.run(t, p.fetchSpec(b, []string{"/poc/netprobe", "dial", b.ProxyURL() + "/golang.org/x/text/@v/list"}, []Mount{bin}))
 	t.Logf("%s", out.Output)
 	if hits.Load() == 0 || !strings.Contains(string(out.Output), "REACHED") {
-		t.Errorf("a GOPROXY on host loopback (%s) is not reachable from the fetch phase: either config.ValidateGoProxy must stop accepting http://127.0.0.1 / localhost proxies, or docs/sandbox.md must say how to expose one to the fetch netns", loop)
+		t.Errorf("a GOPROXY on host loopback (%s) is not reachable through the fetch bridge (%s)", loop, b.ProxyURL())
+	}
+	// runsc --network=sandbox takes the namespace's addresses over, so a
+	// bridge serves one container: log the namespace after the run.
+	if ip, err := findIP(); err == nil {
+		after, _ := ipCmd(ip, "-n", filepath.Base(b.NetnsPath()), "addr", "show")
+		t.Logf("container namespace after the run:\n%s", after)
+	}
+
+	b = p.openBridge(t, "http://"+loop)
+	src := p.dir(t, "nodeps", map[string]string{"go.mod": "module example.com/nodeps\n\ngo 1.22\n", "main.go": "package main\n\nfunc main() {}\n"})
+	mounts := []Mount{
+		{Source: src, Dest: ctrSrc, Writable: true},
+		{Source: p.dir(t, "nodeps-modcache", nil), Dest: ctrModCache, Writable: true},
+		{Dest: ctrTmp, Tmpfs: true, Writable: true, SizeMB: 64},
+	}
+	s := p.fetchSpec(b, []string{"go", "mod", "download"}, mounts)
+	s.Container.Env, s.Container.Cwd = fetchEnv(b.ProxyURL()), ctrSrc
+	dl := p.run(t, s)
+	t.Logf("go mod download, no dependencies: exit %d\n%s", dl.ExitCode, dl.Output)
+	if dl.ExitCode != 0 {
+		t.Error("go mod download of a module without dependencies failed behind the fetch bridge")
 	}
 }
 
-// TestProbeFetchEgressToProxy: the fetch phase reaches the public Go
-// module proxy (the default goproxy). Opt in with
-// KRITOLITH_SANDBOX_INTERNET=1 on a host with internet access.
+// TestProbeFetchEgressToProxy: through the fetch bridge, the fetch
+// phase reaches the public Go module proxy (the default goproxy), and
+// a real `go mod download` with dependencies succeeds, checksum
+// database included (go fetches it through the proxy's /sumdb/ path).
+// Opt in with KRITOLITH_SANDBOX_INTERNET=1 on a host with internet
+// access.
 func TestProbeFetchEgressToProxy(t *testing.T) {
 	env := needSandbox(t)
 	if os.Getenv(envInternet) != "1" {
@@ -467,10 +542,155 @@ func TestProbeFetchEgressToProxy(t *testing.T) {
 	}
 	p := newProbe(t, env)
 	bin := p.buildNetProbe(t)
-	out := p.run(t, p.spec([]string{"/poc/netprobe", "dial", "https://proxy.golang.org/golang.org/x/text/@v/list"}, []Mount{bin}, true, 2*time.Minute))
+	b := p.openBridge(t, "https://proxy.golang.org")
+	out := p.run(t, p.fetchSpec(b, []string{"/poc/netprobe", "dial", b.ProxyURL() + "/golang.org/x/text/@v/list"}, []Mount{bin}))
 	t.Logf("%s", out.Output)
-	if !strings.Contains(string(out.Output), "REACHED") {
-		t.Error("the fetch phase (--network=sandbox) cannot reach the public Go module proxy: `go mod download` of any repository with dependencies will fail; see runsc's network setup for a fresh network namespace")
+	if !strings.Contains(string(out.Output), "REACHED") || !strings.Contains(string(out.Output), "200") {
+		t.Error("the fetch phase cannot reach the public Go module proxy through the fetch bridge")
+	}
+
+	// A tidy module (go.sum complete, as in a real repository): every
+	// download is checked against go.sum, so no checksum database
+	// lookup is needed.
+	if dl, modcache := p.downloadDeps(t, "deps-tidy", depsGoSum); dl.ExitCode != 0 {
+		t.Errorf("go mod download of a tidy module failed through the fetch bridge: exit %d\n%s", dl.ExitCode, dl.Output)
+	} else if _, err := os.Stat(filepath.Join(modcache, "cache", "download", "rsc.io", "quote", "@v", "v1.5.2.zip")); err != nil {
+		t.Errorf("rsc.io/quote v1.5.2 zip not in the module cache: %v", err)
+	}
+
+	// Without go.sum the go tool must ask the checksum database. It asks
+	// the proxy first (<proxy>/sumdb/sum.golang.org/supported); on 404 it
+	// connects to sum.golang.org directly, which the bridge does not
+	// allow. proxy.golang.org answered 404 there when this was checked
+	// (2026-11-25), so this case is logged, not asserted: such a
+	// repository ends INCONCLUSIVE at fetch.
+	dl, _ := p.downloadDeps(t, "deps-nosum", "")
+	t.Logf("go mod download without go.sum: exit %d\n%s", dl.ExitCode, dl.Output)
+}
+
+// depsGoSum is the complete go.sum of the probe module requiring
+// rsc.io/quote v1.5.2 (as written by `go mod tidy`).
+const depsGoSum = `golang.org/x/text v0.0.0-20170915032832-14c0d48ead0c h1:qgOY6WgZOaTkIIMiVjBQcw93ERBE4m30iBm00nkL0i8=
+golang.org/x/text v0.0.0-20170915032832-14c0d48ead0c/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+rsc.io/quote v1.5.2 h1:w5fcysjrx7yqtD/aO+QwRjYZOKnaM9Uh2b40tElTs3Y=
+rsc.io/quote v1.5.2/go.mod h1:LzX7hefJvL54yjefDEDHNONDjII0t9xZLPXsUe+TKr0=
+rsc.io/sampler v1.3.0 h1:7uVkIFmeBqHfdjD+gZwtXXI+RODJ2Wc4O7MPEh/QiW4=
+rsc.io/sampler v1.3.0/go.mod h1:T1hPZKmBbMNahiBKFy5HrXp6adAjACjK9JXDnKaTXpA=
+`
+
+// downloadDeps runs `go mod download -x` for a module requiring
+// rsc.io/quote v1.5.2 behind a fresh bridge to proxy.golang.org, with
+// gosum as its go.sum ("" for none), and returns the output and the
+// host module cache directory.
+func (p *probe) downloadDeps(t *testing.T, name, gosum string) (RunOutput, string) {
+	t.Helper()
+	files := map[string]string{
+		"go.mod":  "module example.com/deps\n\ngo 1.22\n\nrequire rsc.io/quote v1.5.2\n\nrequire (\n\tgolang.org/x/text v0.0.0-20170915032832-14c0d48ead0c // indirect\n\trsc.io/sampler v1.3.0 // indirect\n)\n",
+		"main.go": "package main\n\nimport \"rsc.io/quote\"\n\nfunc main() { println(quote.Hello()) }\n",
+	}
+	if gosum != "" {
+		files["go.sum"] = gosum
+	}
+	src := p.dir(t, name, files)
+	modcache := p.dir(t, name+"-modcache", nil)
+	mounts := []Mount{
+		{Source: src, Dest: ctrSrc, Writable: true},
+		{Source: modcache, Dest: ctrModCache, Writable: true},
+		{Dest: ctrTmp, Tmpfs: true, Writable: true, SizeMB: 128},
+	}
+	b := p.openBridge(t, "https://proxy.golang.org")
+	s := p.fetchSpec(b, []string{"go", "mod", "download", "-x"}, mounts)
+	s.Container.Env, s.Container.Cwd = fetchEnv(b.ProxyURL()), ctrSrc
+	s.Container.FileSizeKB = fetchFileSizeKB // module zips exceed the probe default
+	return p.run(t, s), modcache
+}
+
+// TestProbeFetchBridgeReachesNothingElse: from inside the fetch
+// container only the forwarder answers. Host loopback, a public
+// address, the cloud metadata address, every host interface address
+// and the bridge's host IP on any other port are unreachable, and no
+// host listener sees a connection.
+func TestProbeFetchBridgeReachesNothingElse(t *testing.T) {
+	p := newProbe(t, needSandbox(t))
+	bin := p.buildNetProbe(t)
+	up, upHits := countingServer(t, "127.0.0.1:0")
+	b := p.openBridge(t, "http://"+up)
+	// A host service bound to every address, as sshd or `kritolith
+	// serve` might be.
+	wild, wildHits := countingServer(t, "0.0.0.0:0")
+	_, wildPort, _ := net.SplitHostPort(wild)
+	_, upPort, _ := net.SplitHostPort(up)
+	hostIP, fwdPort := bridgeHost(t, b)
+
+	urls := []string{
+		"http://127.0.0.1:" + upPort + "/", "http://127.0.0.1:" + wildPort + "/", "http://localhost:" + wildPort + "/",
+		"http://1.1.1.1/", "https://proxy.golang.org/", "http://169.254.169.254/latest/meta-data/",
+		"http://" + net.JoinHostPort(hostIP, wildPort) + "/", "http://" + net.JoinHostPort(hostIP, upPort) + "/",
+		"http://" + net.JoinHostPort(hostIP, "22") + "/", "http://" + net.JoinHostPort(hostIP, "80") + "/",
+	}
+	if n, err := strconv.Atoi(fwdPort); err == nil {
+		urls = append(urls, "http://"+net.JoinHostPort(hostIP, strconv.Itoa(n+1))+"/")
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if !ok || n.IP.To4() == nil {
+			continue
+		}
+		urls = append(urls, "http://"+net.JoinHostPort(n.IP.String(), wildPort)+"/", "http://"+net.JoinHostPort(n.IP.String(), "22")+"/")
+	}
+	// The control goes last, in the same container: the forwarder does
+	// answer, so the BLOCKED lines above are not vacuous.
+	control := b.ProxyURL() + "/kritolith-control"
+	urls = append(urls, control)
+	out := p.run(t, p.fetchSpec(b, append([]string{"/poc/netprobe", "dial"}, urls...), []Mount{bin}))
+	t.Logf("%s", out.Output)
+	sawControl := false
+	for _, line := range strings.Split(string(out.Output), "\n") {
+		switch {
+		case strings.HasPrefix(line, "REACHED "+control+" "):
+			sawControl = true
+		case strings.HasPrefix(line, "REACHED"):
+			t.Errorf("reachable from the fetch container: %s", line)
+		}
+	}
+	if !sawControl {
+		t.Error("the forwarder itself was not reachable, so this probe proves nothing")
+	}
+	// The upstream's one hit is the control, relayed by the forwarder.
+	if wildHits.Load() != 0 || upHits.Load() != 1 {
+		t.Errorf("host listener hits: wildcard %d (want 0), upstream %d (want 1, the relayed control)", wildHits.Load(), upHits.Load())
+	}
+}
+
+// TestProbeSweepRemovesFetchBridges: a bridge left by a crashed run
+// (never closed) is removed by SweepOrphans at the next start.
+func TestProbeSweepRemovesFetchBridges(t *testing.T) {
+	needSandbox(t)
+	workDir := filepath.Join(t.TempDir(), "work")
+	for _, d := range []string{workDir, filepath.Join(workDir, runscStateDir)} {
+		if err := ensurePrivateDir(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := newHostBridges(workDir).Open(context.Background(), "https://proxy.golang.org")
+	if err != nil {
+		t.Fatalf("fetch bridge: %v", err)
+	}
+	// Simulate a crash: stop only the forwarder, keep the namespaces.
+	_ = b.(*ipBridge).fwd.close()
+	if _, err := os.Lstat(b.NetnsPath()); err != nil {
+		t.Fatalf("bridge namespace missing before the sweep: %v", err)
+	}
+	if err := sweepOrphans("runsc", workDir, time.Now()); err != nil {
+		t.Errorf("sweep: %v", err)
+	}
+	assertBridgeGone(t, b)
+	if ents, _ := os.ReadDir(filepath.Join(workDir, bridgeMarkerDir)); len(ents) != 0 {
+		t.Errorf("bridge markers left: %v", ents)
 	}
 }
 
