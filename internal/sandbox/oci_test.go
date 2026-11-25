@@ -210,3 +210,75 @@ func TestBuildOCINetworkFlagDoesNotChangeConfig(t *testing.T) {
 		t.Fatal("config differs with Network flag")
 	}
 }
+
+func TestBuildOCIRejectsHostileSpecs(t *testing.T) {
+	const nul = "\x00"
+	extra := func(s *ContainerSpec, m Mount) { s.Mounts = append(s.Mounts, m) }
+	cases := map[string]func(*ContainerSpec){
+		"source root":                  func(s *ContainerSpec) { s.Mounts[0].Source = "/" },
+		"source var":                   func(s *ContainerSpec) { s.Mounts[0].Source = "/var" },
+		"source srv":                   func(s *ContainerSpec) { s.Mounts[0].Source = "/srv" },
+		"source parent of forbidden":   func(s *ContainerSpec) { s.Mounts[0].Source = "/srv/kritolith" },
+		"source dot segment forbidden": func(s *ContainerSpec) { s.Mounts[0].Source = "/srv/kritolith/./data" },
+		"rootfs root":                  func(s *ContainerSpec) { s.Rootfs = "/" },
+		"rootfs under deny":            func(s *ContainerSpec) { s.Rootfs = "/etc/rootfs" },
+		"rootfs dotdot":                func(s *ContainerSpec) { s.Rootfs = "/srv/x/../rootfs" },
+		"rootfs nul":                   func(s *ContainerSpec) { s.Rootfs = "/srv/root" + nul + "fs" },
+		"writable equals rootfs":       func(s *ContainerSpec) { s.Mounts[0].Writable, s.Mounts[0].Source = true, "/srv/kritolith/rootfs" },
+		"writable under rootfs":        func(s *ContainerSpec) { s.Mounts[0].Writable, s.Mounts[0].Source = true, "/srv/kritolith/rootfs/up" },
+		"writable contains rootfs": func(s *ContainerSpec) {
+			s.Rootfs = "/srv/kritolith/box/rootfs"
+			s.Mounts[0].Writable, s.Mounts[0].Source = true, "/srv/kritolith/box"
+		},
+		"tmpfs not writable":         func(s *ContainerSpec) { s.Mounts[1].Writable = false },
+		"tmpfs size zero":            func(s *ContainerSpec) { s.Mounts[1].SizeMB = 0 },
+		"tmpfs size too big":         func(s *ContainerSpec) { s.Mounts[1].SizeMB = 1<<20 + 1 },
+		"memory 1<<43":               func(s *ContainerSpec) { s.MemoryMB = 1 << 43 },
+		"memory max+1":               func(s *ContainerSpec) { s.MemoryMB = 1<<20 + 1 },
+		"cpus max+1":                 func(s *ContainerSpec) { s.CPUs = 1025 },
+		"pids max+1":                 func(s *ContainerSpec) { s.PIDs = 1<<20 + 1 },
+		"cpu seconds max+1":          func(s *ContainerSpec) { s.CPUSeconds = 86401 },
+		"file size max+1":            func(s *ContainerSpec) { s.FileSizeKB = 1<<30 + 1 },
+		"duplicate destination":      func(s *ContainerSpec) { s.Mounts[1].Dest = "/work" },
+		"nested destination":         func(s *ContainerSpec) { s.Mounts[1].Dest = "/work/out" },
+		"covering later destination": func(s *ContainerSpec) { s.Mounts[0].Dest, s.Mounts[1].Dest = "/work/in", "/work" },
+		"gid zero":                   func(s *ContainerSpec) { s.GID = 0 },
+		"cwd dotdot":                 func(s *ContainerSpec) { s.Cwd = ".." },
+		"cwd relative":               func(s *ContainerSpec) { s.Cwd = "work" },
+		"cwd nul":                    func(s *ContainerSpec) { s.Cwd = "/wo" + nul + "rk" },
+		"args nul":                   func(s *ContainerSpec) { s.Args = []string{"go" + nul} },
+		"env nul":                    func(s *ContainerSpec) { s.Env = []string{"A=b" + nul} },
+		"source nul":                 func(s *ContainerSpec) { s.Mounts[0].Source = "/srv/kritolith/src" + nul },
+		"dest nul":                   func(s *ContainerSpec) { s.Mounts[1].Dest = "/t" + nul },
+		"forbidden nul":              func(s *ContainerSpec) { s.Forbidden = []string{"/srv/kritolith/data" + nul} },
+		"forbidden dotdot":           func(s *ContainerSpec) { s.Forbidden = []string{"/srv/../data"} },
+		"writable aliases ro source": func(s *ContainerSpec) {
+			extra(s, Mount{Source: "/srv/kritolith/src", Dest: "/scratch", Writable: true})
+		},
+		"writable under ro source": func(s *ContainerSpec) {
+			extra(s, Mount{Source: "/srv/kritolith/src/sub", Dest: "/scratch", Writable: true})
+		},
+		"writable contains ro source": func(s *ContainerSpec) {
+			s.Mounts[0].Source = "/srv/kritolith/src/sub"
+			extra(s, Mount{Source: "/srv/kritolith/src", Dest: "/scratch", Writable: true})
+		},
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := goodSpec()
+			mut(&s)
+			if _, err := BuildOCI(s); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestBuildOCIOversizeTmpfsMessage(t *testing.T) {
+	s := goodSpec()
+	s.Mounts[1].SizeMB = 1<<20 + 1
+	_, err := BuildOCI(s)
+	if err == nil || !strings.Contains(err.Error(), "between 1 and") {
+		t.Fatalf("err = %v", err)
+	}
+}

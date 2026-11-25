@@ -219,11 +219,33 @@ func checkDest(dest string) error {
 	return nil
 }
 
+// checkBindAliases rejects a writable bind whose host source overlaps
+// (equals, lies under, or contains) any other bind's source: otherwise a
+// read-only bind could be reached writably through the other mount.
+func checkBindAliases(ms []Mount) error {
+	for i, a := range ms {
+		if a.Tmpfs || !a.Writable {
+			continue
+		}
+		ac := filepath.Clean(a.Source)
+		for j, b := range ms {
+			if i == j || b.Tmpfs {
+				continue
+			}
+			bc := filepath.Clean(b.Source)
+			if under(ac, bc) || under(bc, ac) {
+				return fmt.Errorf("writable mount %q overlaps mount source %q", a.Source, b.Source)
+			}
+		}
+	}
+	return nil
+}
+
 func validate(s ContainerSpec) ([]string, error) {
 	if len(s.Args) == 0 {
 		return nil, errors.New("no command")
 	}
-	if !strings.HasPrefix(s.Cwd, "/") || hasDotDot(s.Cwd) || filepath.Clean(s.Cwd) != s.Cwd {
+	if strings.ContainsRune(s.Cwd, 0) || !strings.HasPrefix(s.Cwd, "/") || hasDotDot(s.Cwd) || filepath.Clean(s.Cwd) != s.Cwd {
 		return nil, errors.New("cwd must be absolute and clean")
 	}
 	for _, a := range s.Args {
@@ -252,8 +274,8 @@ func validate(s ContainerSpec) ([]string, error) {
 	}
 	forbidden := make([]string, 0, len(s.Forbidden))
 	for _, f := range s.Forbidden {
-		if !strings.HasPrefix(f, "/") || hasDotDot(f) {
-			return nil, fmt.Errorf("forbidden prefix %q must be absolute without ..", f)
+		if !strings.HasPrefix(f, "/") || hasDotDot(f) || strings.ContainsRune(f, 0) {
+			return nil, fmt.Errorf("forbidden prefix %q must be absolute, without .. or NUL", f)
 		}
 		forbidden = append(forbidden, filepath.Clean(f))
 	}
@@ -275,6 +297,9 @@ func BuildOCI(s ContainerSpec) ([]byte, error) {
 		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "noexec", "mode=755", "size=64k"}},
 	}
 	rootfs := filepath.Clean(s.Rootfs)
+	if err := checkBindAliases(s.Mounts); err != nil {
+		return nil, err
+	}
 	dests := []string{}
 	for _, m := range s.Mounts {
 		if err := checkDest(m.Dest); err != nil {
@@ -291,7 +316,7 @@ func BuildOCI(s ContainerSpec) ([]byte, error) {
 				return nil, fmt.Errorf("tmpfs mount %q must be writable", m.Dest)
 			}
 			if m.SizeMB <= 0 || m.SizeMB > maxMemoryMB {
-				return nil, fmt.Errorf("tmpfs mount %q needs a positive size", m.Dest)
+				return nil, fmt.Errorf("tmpfs mount %q size must be between 1 and %d MB", m.Dest, maxMemoryMB)
 			}
 			mounts = append(mounts, ociMount{Destination: m.Dest, Type: "tmpfs", Source: "tmpfs",
 				Options: []string{"nosuid", "nodev", fmt.Sprintf("size=%dm", m.SizeMB)}})
