@@ -204,7 +204,7 @@ Mail is sent only when `--notify` is given. Kritolith requires TLS (STARTTLS, or
 
 An LLM is optional and off by default. To use one for claim extraction and embeddings, copy [`kritolith.example.json`](kritolith.example.json) and pass it with `--config`.
 
-**Requirements today:** `git` and the Go toolchain. The sandbox, when it lands, will need Linux with [gVisor](https://gvisor.dev) (`runsc`).
+**Requirements today** (full details in [docs/install.md](docs/install.md)): `git` and the Go toolchain. The sandbox, when it lands, will need Linux with [gVisor](https://gvisor.dev) (`runsc`).
 
 ## Scope
 
@@ -230,7 +230,8 @@ Version 1 deliberately stays narrow.
 - [x] Email delivery of verdicts (`--notify`)
 - [x] Webhook server for GitHub private reports (`serve`)
 - [x] Public threat model ([docs/threat-model.md](docs/threat-model.md)) and fuzz tests for every parser of hostile input
-- [ ] Install docs, first release
+- [x] Install docs ([install](docs/install.md), [serve](docs/serve.md))
+- [ ] First release
 
 ## Where it stands
 
