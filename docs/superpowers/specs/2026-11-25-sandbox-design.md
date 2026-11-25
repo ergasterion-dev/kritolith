@@ -157,3 +157,11 @@ State plainly: fetch-phase egress is restricted by tool configuration, not by th
 ## Out of scope for this milestone
 
 Shared module cache across runs (per-run only; slower, safer), a real egress filter, GitHub App auth, Windows/macOS host support, non-Go PoCs.
+
+## Addendum (2026-11-25): the fetch bridge
+
+The first run on a real runsc (20261102.0, Ubuntu 24.04 arm64) showed that the chosen fetch egress approach cannot work as written: the fetch container's fresh network namespace has no usable network at all (even `127.0.0.1` is unreachable and DNS fails), so `go mod download` reaches no proxy.
+
+The fetch phase now runs behind a per-fetch *fetch bridge*, which supersedes "restricted by tool configuration only" above. Kritolith, as root, creates a container network namespace and a bridge namespace joined by a veth pair with link-local `/30` addresses and no route anywhere else. An in-process HTTP forwarder listens inside the bridge namespace and relays `GET`/`HEAD` requests for module paths to the one configured proxy, from the host's namespace. The fetch container joins the container namespace (OCI `linux.namespaces` with a path) and runs with `--network=sandbox` and `GOPROXY` set to the forwarder. The sandbox therefore has network reach to the forwarder and nothing else; this was checked from inside a fetch container against host loopback, host interface addresses, a public address, the metadata address and other ports of the bridge address.
+
+Consequences: the sandbox needs root and iproute2 (without them, fetch ends `INCONCLUSIVE`); build and run are unchanged (`--network=none`); a configured loopback proxy works because the forwarder runs on the host. One gap remains: go reaches the checksum database through the proxy only when the proxy says it supports that, and `proxy.golang.org` does not, so a repository whose `go.sum` lacks a hash `go mod download` needs ends `INCONCLUSIVE` at fetch. Details are in `docs/sandbox.md`, "Fetch egress".

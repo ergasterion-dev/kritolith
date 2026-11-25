@@ -4,7 +4,7 @@ Kritolith runs a reporter's proof of concept inside gVisor (`runsc`). For each r
 
 This page covers what the operator has to set up, the config keys, what the sandbox does and does not isolate, and how to run the integration tests.
 
-> Status: the code and its unit tests are done. The `sandbox`-tagged integration tests (`internal/sandbox/integration_test.go`, `integration_probe_test.go`) have **not yet been run on a real runsc**. The [first run checklist](#first-run-checklist) lists what that run has to confirm. Until it passes, do not run Kritolith on real embargoed reports.
+> Status: the code and its unit tests are done. The `TestProbe*` integration tests pass on a real runsc (20261102.0, Ubuntu 24.04 arm64). The rest of the `sandbox`-tagged suite (`internal/sandbox/integration_test.go`) has not yet passed in full on a real runsc. The [first run checklist](#first-run-checklist) lists what is still open. Until it is complete, do not run Kritolith on real embargoed reports.
 
 ## Requirements
 
@@ -12,6 +12,7 @@ This page covers what the operator has to set up, the config keys, what the sand
 - `runsc` on `PATH` (see [Installing runsc](#installing-runsc)).
 - A Go toolchain rootfs (see [Producing the rootfs](#producing-the-rootfs)).
 - **Root.** Kritolith calls `runsc run` without `--rootless`, because the gVisor rootless guide says rootless mode supports neither `create` (which `run` uses) nor netstack. `runsc` therefore runs with the privileges of the Kritolith process, and creating the sandbox's namespaces and its gofer needs root. When Kritolith runs as root, the container process runs as uid/gid 65534 (nobody) with every capability dropped and `no_new_privs` set, and Kritolith chowns each run's scratch tree to 65534 before handing it over. If Kritolith runs as another user, the container runs as that uid, and `runsc` will normally fail to start the sandbox at all. When that happens, the stage ends `INCONCLUSIVE` with the error.
+- **iproute2** (`ip`, in `/usr/sbin`, `/usr/bin`, `/sbin` or `/bin`) and root, for the fetch phase's network bridge (see [Fetch egress](#fetch-egress)). Without either, the sandbox still starts, but every fetch ends `INCONCLUSIVE` with the reason.
 - With `sandbox.ignore_cgroups` off (the default and the only production setting), `runsc` must be able to create cgroups on the host. That means a real Linux host or VM, not a container.
 
 ## Producing the rootfs
@@ -68,7 +69,7 @@ URL=https://storage.googleapis.com/gvisor/releases/release/20261102.0/${ARCH}
 
 If `zstd` is not installed, the guide offers `gvisor.tar.bz2` (and its `.sha512`) instead. The checksum is fetched from the same bucket over HTTPS. It catches a corrupt download, not a compromised bucket. Check `runsc --version` afterwards.
 
-Kritolith passes `runsc` only fixed flags: `--root=<work_dir>/runsc-state`, `--platform=systrap`, `--network=none` (or `--network=sandbox` for the fetch phase), and `--ignore-cgroups` when configured. It never uses `--network=host`, `runsc do` or the Docker socket.
+Kritolith passes `runsc` only fixed flags: `--root=<work_dir>/runsc-state`, `--platform=systrap`, `--network=none` (or `--network=sandbox` for the fetch phase, which always runs in a fetch bridge namespace), and `--ignore-cgroups` when configured. It never uses `--network=host`, `runsc do` or the Docker socket.
 
 ## Config keys
 
@@ -78,7 +79,7 @@ The `sandbox` section of `kritolith.json`. The sandbox is off until `rootfs` is 
 |---|---|---|
 | `rootfs` | (none) | Absolute path of the Go rootfs. Setting it turns the sandbox on. |
 | `runtime` | `runsc` | Runtime binary, looked up on `PATH`. |
-| `goproxy` | `https://proxy.golang.org` | The only module proxy the fetch phase uses. Exactly one URL: no list (`,` `\|`), no `direct`, no `off`, no userinfo, query or fragment. `https://`, or `http://` only to a loopback host (see the checklist: that a loopback proxy is reachable from the fetch phase is unverified). |
+| `goproxy` | `https://proxy.golang.org` | The only module proxy the fetch phase uses. Exactly one URL: no list (`,` `\|`), no `direct`, no `off`, no userinfo, query or fragment. `https://`, or `http://` only to a loopback host. The fetch container reaches it only through the fetch bridge's forwarder, which runs on the host, so a loopback proxy works. |
 | `fetch_timeout_seconds` | 300 | Wall clock for `go mod download`. |
 | `build_timeout_seconds` | 300 | Wall clock for the build. A cold `-race` build compiles the standard library, because each run has its own build cache. |
 | `run_timeout_seconds` | 120 | Wall clock for running the PoC. Go's own `-test.timeout` is set to 90% of it, so a hang still prints a goroutine dump. |
@@ -86,7 +87,7 @@ The `sandbox` section of `kritolith.json`. The sandbox is off until `rootfs` is 
 | `cpus` | 2 | cgroup CPU quota. The CPU-time rlimit is `timeout × cpus + 10` seconds. |
 | `pids` | 512 | cgroup pids limit, and `RLIMIT_NPROC`. |
 | `output_limit_kb` | 1024 | Combined stdout+stderr kept per phase. The rest is read and dropped, so the writer never blocks. |
-| `work_dir` | `<data_dir>-sandbox` | Holds bundles, `runsc` state and per-run scratch trees. It must not be, contain or lie inside the data dir. It is created 0700, must be owned by the Kritolith user, and is refused if it is a symlink or group/world writable. One live Kritolith process per work dir (flock). Startup removes leftovers older than the process. |
+| `work_dir` | `<data_dir>-sandbox` | Holds bundles, `runsc` state, per-run scratch trees and `fetch-bridges/` (one marker file per live fetch bridge). It must not be, contain or lie inside the data dir. It is created 0700, must be owned by the Kritolith user, and is refused if it is a symlink or group/world writable. One live Kritolith process per work dir (flock). Startup removes leftovers older than the process. |
 | `ignore_cgroups` | `false` | Runs `runsc --ignore-cgroups`: memory, CPU and pids limits are **not** enforced. Only for a nested dev setup (runsc inside a container). Kritolith warns at startup and adds a note to every repro result. rlimits and the wall clock still apply. |
 
 Example:
@@ -107,7 +108,7 @@ What the sandbox does:
 
 - **Kernel boundary.** The PoC talks to gVisor's user-space kernel, not to the host kernel. gVisor is not a microVM: it still uses a small set of host syscalls, and a gVisor bug is a host bug. Every layer below exists because of that.
 - **No network in build and run.** Those phases run with `--network=none`. Only the fetch phase has a network, and the PoC is not in the container then: it is copied in for the build.
-- **Fetch egress is restricted by configuration only.** The fetch phase runs only `go mod download`, with `GOPROXY` set to the one configured proxy (no `direct`), `GOTOOLCHAIN=local`, `GOFLAGS=-mod=mod -modcacherw` and the checksum database at its default. No firewall stops a process in that container from reaching anything else, but the only process there is the go tool, and `go mod download` runs no module code. A hostile `go.mod` can make it download arbitrary modules from the proxy (checksums still apply). A `go.mod` with a `toolchain` line, or a `replace` to a local path outside the module, is refused before any container starts.
+- **Fetch egress reaches the forwarder and nothing else.** See [Fetch egress](#fetch-egress). The fetch phase runs only `go mod download`, with `GOPROXY` set to the bridge's forwarder, `GOTOOLCHAIN=local`, `GOFLAGS=-mod=mod -modcacherw` and the checksum database at its default. `go mod download` runs no module code. A hostile `go.mod` can make it download arbitrary modules from the proxy (checksums still apply). A `go.mod` with a `toolchain` line, or a `replace` to a local path outside the module, is refused before any container starts.
 - **Filesystem.** The rootfs is read-only. In the run phase the source tree and the built binary are read-only, and the only writable places are a size-capped tmpfs `/tmp` and an output directory for the coverage profile. Each phase gets a fresh scratch tree, which is removed afterwards. Source extraction never carries a symlink out of the tree.
 - **Never mounted.** The data directory (database, signing key, mirrors, logs), any path under `/etc`, `/run`, `/var/run`, `/proc`, `/sys` and `/dev`, `/` itself, and anything named `docker.sock`. Symlinks are resolved before the check.
 - **Process.** The environment is empty apart from a fixed `PATH`, `HOME`, `TMPDIR` and the Go variables above. No host variable is passed through, not even to `runsc` itself. Every capability is dropped and `no_new_privs` is set. The process runs as an unprivileged user. `/dev` holds only `null`, `zero`, `urandom` and `tty`.
@@ -121,6 +122,25 @@ What it does not do, or does not do yet:
 - **runsc's own failures are ambiguous.** `runsc` exits 128 when it fails to start a container, which cannot be told apart from a contained `exit 128`. Both are `INCONCLUSIVE`.
 - **Logs stay local.** Capped phase logs go to `<data_dir>/sandbox-logs/<report id>/` (0600) and are never put in the emailed bundle. The signed verdict carries each log's SHA-256. The logs have no retention limit yet.
 - **Reports through `check --ghsa` and `serve` never reach the sandbox yet.** GitHub's advisory API returns no attachments, and code blocks in the report body are not run.
+
+## Fetch egress
+
+The fetch phase needs the module proxy and must reach nothing else. runsc's `--network=sandbox` copies the interfaces and addresses of the network namespace the sandbox starts in, and a fresh namespace has only an unconfigured loopback, so the container needs a prepared namespace. For every fetch Kritolith builds a *fetch bridge*:
+
+1. Two network namespaces, `kvc<id>` (the container's) and `kvb<id>` (the bridge's), where `<id>` is 8 hex digits from `crypto/rand`. A veth pair joins them, one end in each, never in the host's namespace. Both ends get an address in a random `169.254.X.Y/30` (`X` in 1..168, never 169; a block that overlaps a host address is skipped). Loopback and both ends are brought up. There is no default route, no IP forwarding, no NAT and no firewall rule: the container's namespace can reach the bridge namespace's address and nothing else.
+2. An HTTP forwarder inside Kritolith. Its listening socket is created inside the bridge namespace (the thread switches in with `setns` for the socket call only); everything else it does, including connecting to the proxy, happens in the host's namespace. Keeping the host end out of the host's namespace means the container cannot reach host services bound to the wildcard address.
+3. The fetch container joins `/run/netns/kvc<id>` (OCI `linux.namespaces`) and runs with `--network=sandbox`, with `GOPROXY=http://<bridge ip>:<port>`.
+
+The forwarder relays `GET` and `HEAD` only, for origin-form paths (`/...`) with no `.` or `..` segment, no encoded dot, slash, backslash or NUL, no control bytes, and nothing `path.Clean` would change. The upstream URL is always the configured `sandbox.goproxy` plus the request's path and query: `Host`, `X-Forwarded-*` and absolute-form targets cannot change it. Only `Accept`, `Accept-Encoding` and `User-Agent` are passed upstream. Each upstream request has a 10 minute limit, one response is capped at 512 MiB and one fetch at 2 GiB in total; a response over a cap cuts the connection rather than passing a short body. A redirect is followed only on the proxy's own scheme and host, or to an `https` URL. A connection from any address other than the container's end of the pair is closed unread.
+
+The bridge is torn down after the fetch on every path (success, error, cancellation, wall clock, panic): the forwarder stops, both namespaces are deleted, and the veth pair is deleted if it is still there. runsc takes the container namespace's addresses over when the sandbox starts, so a bridge serves exactly one container. A marker file per bridge in `<work_dir>/fetch-bridges/` lets the startup sweep remove the namespaces and links a crashed run left; only bridges with a marker in this work dir are touched.
+
+`ip` is run by absolute path with fixed argument lists, an empty environment apart from a fixed `PATH`, and a 15 second limit per call. If Kritolith is not root, `ip` is missing, or any step fails, there is no bridge and the fetch ends `INCONCLUSIVE` with the reason. It is never a rejection.
+
+What the bridge does not cover:
+
+- **The checksum database.** The go tool asks the proxy whether it proxies the checksum database (`<proxy>/sumdb/sum.golang.org/supported`). If it does not (`proxy.golang.org` answered 404 there on 2026-11-25), go connects to `sum.golang.org` directly, which the bridge does not allow. A repository whose `go.sum` already holds every hash `go mod download` needs (a tidy repository) never asks, and fetches fine. One that needs a lookup ends `INCONCLUSIVE` at fetch.
+- **Any proxy but the configured one.** Operators behind an outbound HTTP proxy: the forwarder ignores `HTTP_PROXY`/`HTTPS_PROXY`, so the configured `goproxy` must be reachable directly from the host.
 
 ## Running the integration tests
 
@@ -178,7 +198,9 @@ Earlier tasks took these from the gVisor documentation and could not check them 
 - [ ] `TestProbeRunscGlobalFlagsAccepted`: `kill`, `delete --force` and `list` accept the global flags (`--root`, `--platform`, `--network`, `--ignore-cgroups`), and `delete --force` of a missing container succeeds.
 - [ ] `TestProbeLongWorkDir`: a long work dir path stays within runsc's socket path limits.
 - [ ] `TestProbeNoNetworkInBuildAndRun`: with `--network=none`, nothing is reachable: not a host listener on loopback, not one on a host address, not a public address.
-- [ ] `TestProbeLoopbackProxyInFetchNetns`: an `http://127.0.0.1` GOPROXY (which config accepts) can be reached from the fetch phase. The fetch container runs in its own network namespace, so its loopback is probably not the host's. If this fails, config must stop accepting loopback proxies, or this page must say how to expose one.
-- [ ] `TestProbeFetchEgressToProxy` (`KRITOLITH_SANDBOX_INTERNET=1`): the fetch phase reaches `https://proxy.golang.org`. The OCI config asks for a fresh network namespace. runsc's `--network=sandbox` copies the interfaces of the namespace the sandbox runs in, and a fresh namespace has only loopback. If this fails, every repository with dependencies ends `INCONCLUSIVE` at fetch until the fetch phase gets a namespace with a route out.
+- [x] `TestProbeLoopbackProxyInFetchNetns`: an `http://127.0.0.1` GOPROXY (which config accepts) is reached through the fetch bridge's forwarder, and `go mod download` of a module without dependencies succeeds behind the bridge. It also logs the container namespace after the run (runsc has removed its addresses). Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25. The first real run, before the bridge, found that a fresh namespace has no usable network at all (even loopback was unreachable), which is why the bridge exists.
+- [x] `TestProbeFetchEgressToProxy` (`KRITOLITH_SANDBOX_INTERNET=1`): through the bridge the fetch phase reaches `https://proxy.golang.org`, and `go mod download` of a tidy module with dependencies (`rsc.io/quote` v1.5.2 and its two dependencies, with `go.sum`) succeeds. The same module without `go.sum` is logged, not asserted: go needs `sum.golang.org` for it, which the bridge does not reach (see [Fetch egress](#fetch-egress)). Passed on the same host.
+- [x] `TestProbeFetchBridgeReachesNothingElse`: from inside the fetch container, host loopback ports, `localhost`, `1.1.1.1`, `https://proxy.golang.org`, `169.254.169.254`, every host interface address (on a wildcard-bound host listener's port and on 22), and the bridge's host IP on any port but the forwarder's are all unreachable, and no host listener sees a connection. The forwarder itself answers, in the same container, so the result is not vacuous. Passed on the same host.
+- [x] `TestProbeSweepRemovesFetchBridges`: a bridge left by a crashed run is removed (namespaces, links and marker) by the startup sweep. Passed on the same host.
 - [ ] `TestProbeCgroupMemoryLimit` (`KRITOLITH_SANDBOX_CGROUPS=1`): the memory limit kills an allocator. The test logs its exit status, which shows whether an OOM kill can be recognised.
 - [ ] `TestSandboxHostileFixtures`, `TestSandboxHostilePoCNames`, and the benign and reproduction tests: all pass. Also note which signal fires for `go-2023-2328` when `kritolith eval` runs on the configured host (its expectation relies on the race signal).
