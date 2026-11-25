@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,9 +37,95 @@ type Config struct {
 	SMTP notify.Config `json:"smtp,omitempty"`
 	// GitHub configures `kritolith serve`.
 	GitHub GitHub `json:"github,omitempty"`
-	// Sandbox is parsed by a later milestone. Kept raw so documented
-	// config files stay valid today.
-	Sandbox json.RawMessage `json:"sandbox,omitempty"`
+	// Sandbox configures the gVisor PoC sandbox. Without a rootfs it is
+	// disabled.
+	Sandbox Sandbox `json:"sandbox,omitempty"`
+}
+
+// Sandbox is the "sandbox" section. Zero numeric and string values mean
+// "use the default"; see WithDefaults.
+type Sandbox struct {
+	Runtime             string `json:"runtime,omitempty"`
+	Rootfs              string `json:"rootfs,omitempty"`
+	GoProxy             string `json:"goproxy,omitempty"`
+	FetchTimeoutSeconds int    `json:"fetch_timeout_seconds,omitempty"`
+	BuildTimeoutSeconds int    `json:"build_timeout_seconds,omitempty"`
+	RunTimeoutSeconds   int    `json:"run_timeout_seconds,omitempty"`
+	MemoryMB            int    `json:"memory_mb,omitempty"`
+	CPUs                int    `json:"cpus,omitempty"`
+	PIDs                int    `json:"pids,omitempty"`
+	OutputLimitKB       int    `json:"output_limit_kb,omitempty"`
+}
+
+// Enabled reports whether a rootfs is configured.
+func (s Sandbox) Enabled() bool { return s.Rootfs != "" }
+
+// WithDefaults returns s with every zero field set to its default.
+func (s Sandbox) WithDefaults() Sandbox {
+	if s.Runtime == "" {
+		s.Runtime = "runsc"
+	}
+	if s.GoProxy == "" {
+		s.GoProxy = "https://proxy.golang.org"
+	}
+	for _, f := range []struct {
+		v   *int
+		def int
+	}{
+		{&s.FetchTimeoutSeconds, 300}, {&s.BuildTimeoutSeconds, 300},
+		{&s.RunTimeoutSeconds, 120}, {&s.MemoryMB, 2048}, {&s.CPUs, 2},
+		{&s.PIDs, 512}, {&s.OutputLimitKB, 1024},
+	} {
+		if *f.v == 0 {
+			*f.v = f.def
+		}
+	}
+	return s
+}
+
+// Validate checks the sandbox section's values.
+func (s Sandbox) Validate() error {
+	for _, f := range []struct {
+		name string
+		v    int
+	}{
+		{"fetch_timeout_seconds", s.FetchTimeoutSeconds},
+		{"build_timeout_seconds", s.BuildTimeoutSeconds},
+		{"run_timeout_seconds", s.RunTimeoutSeconds},
+		{"memory_mb", s.MemoryMB}, {"cpus", s.CPUs}, {"pids", s.PIDs},
+		{"output_limit_kb", s.OutputLimitKB},
+	} {
+		if f.v < 0 {
+			return fmt.Errorf("sandbox.%s must not be negative", f.name)
+		}
+	}
+	if s.Rootfs != "" && !filepath.IsAbs(s.Rootfs) {
+		return fmt.Errorf("sandbox.rootfs %q must be an absolute path", s.Rootfs)
+	}
+	if s.GoProxy != "" {
+		u, err := url.Parse(s.GoProxy)
+		if err != nil || u.Hostname() == "" {
+			return fmt.Errorf("sandbox.goproxy %q is not a valid URL", s.GoProxy)
+		}
+		switch u.Scheme {
+		case "https":
+		case "http":
+			if !isLoopback(u.Hostname()) {
+				return fmt.Errorf("sandbox.goproxy %q: http is only allowed for loopback hosts", s.GoProxy)
+			}
+		default:
+			return fmt.Errorf("sandbox.goproxy %q must be https:// (or http:// to loopback)", s.GoProxy)
+		}
+	}
+	return nil
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // GitHub is the "github" section: how `kritolith serve` authenticates
@@ -104,7 +192,7 @@ func (c Config) Validate() error {
 	if err := c.SMTP.Validate(); err != nil {
 		return err
 	}
-	return nil
+	return c.Sandbox.Validate()
 }
 
 // DefaultDataDir is $XDG_DATA_HOME/kritolith, or ~/.local/share/kritolith.
