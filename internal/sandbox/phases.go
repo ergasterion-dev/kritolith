@@ -437,11 +437,19 @@ func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, h
 	if module == "" {
 		return a.fail("go.mod declares no usable module path")
 	}
-	if p.Shape == ShapeFuzz && !hasFuzzTarget(tree, dir, p.FuzzName) {
-		a.needsInfo = fmt.Sprintf("the package directory %s has no fuzz target %s for the PoC's seeds", quote(dir), quote(p.FuzzName))
-		return a
+	if p.Shape == ShapeFuzz {
+		switch found, trunc := hasFuzzTarget(tree, dir, p.FuzzName); {
+		case trunc:
+			return a.fail(dirLimitReason(dir) + ", so the fuzz target could not be looked up")
+		case !found:
+			a.needsInfo = fmt.Sprintf("the package directory %s has no fuzz target %s for the PoC's seeds", quote(dir), quote(p.FuzzName))
+			return a
+		}
 	}
-	kept, ranges := claimRanges(tree, modRoot, moduleClaims(tree, modRoot, claims))
+	kept, ranges, tooBig := claimRanges(tree, modRoot, moduleClaims(tree, modRoot, claims))
+	if len(tooBig) > 0 {
+		return a.fail(dirLimitReason(tooBig[0]) + ", so a claimed function could not be looked up")
+	}
 	targets := TargetsFromClaims(kept, module)
 	targets.FuncRanges = ranges
 	_, targets.PoCFiles = pocPaths(p, modRoot, dir)

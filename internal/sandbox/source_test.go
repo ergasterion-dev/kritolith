@@ -40,7 +40,7 @@ func TestClaimRangesDropsTestHelpers(t *testing.T) {
 		{Kind: report.ClaimFunction, Verified: report.TriYes, DeclPkgDir: "vuln", DeclReceiver: "T", DeclName: "Plat"},
 		{Kind: report.ClaimFunction, Verified: report.TriYes, DeclPkgDir: "vuln", DeclName: "Gone"},
 	}
-	kept, ranges := claimRanges(DirTree(dst), ".", moduleClaims(DirTree(dst), ".", claims))
+	kept, ranges, _ := claimRanges(DirTree(dst), ".", moduleClaims(DirTree(dst), ".", claims))
 	var names []string
 	for _, c := range kept {
 		names = append(names, c.DeclName)

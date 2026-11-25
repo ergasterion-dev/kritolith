@@ -128,6 +128,9 @@ func moduleClaims(tree Tree, modRoot string, claims []report.Claim) []report.Cla
 // parsedDir is the parsed Go files of one directory.
 type parsedDir struct {
 	files []parsedFile
+	// truncated: the directory is over the read limits, so a
+	// declaration not in files may still exist.
+	truncated bool
 }
 
 type parsedFile struct {
@@ -137,32 +140,19 @@ type parsedFile struct {
 }
 
 // parseDir parses the Go files the go tool would consider in dir
-// (tree-relative): not hidden, not "_" prefixed, at most
-// maxGoFilesPerDir of them. Unparseable files are skipped.
+// (tree-relative): not hidden, not "_" prefixed, within the
+// per-directory read limits (truncated says one was hit). Unparseable
+// files are skipped.
 func parseDir(tree Tree, dir string) parsedDir {
-	names, err := tree.ReadDir(dir)
-	if err != nil {
-		return parsedDir{}
-	}
 	var pd parsedDir
-	for _, n := range names {
-		if !strings.HasSuffix(n, ".go") || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
-			continue
-		}
-		if len(pd.files) >= maxGoFilesPerDir {
-			break
-		}
-		src, err := tree.ReadFile(path.Join(dir, n))
-		if err != nil {
-			continue
-		}
+	pd.truncated = readGoFiles(tree, dir, func(n string, src []byte) bool {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, n, src, parser.SkipObjectResolution)
-		if err != nil || f == nil {
-			continue
+		if err == nil && f != nil {
+			pd.files = append(pd.files, parsedFile{name: n, fset: fset, f: f})
 		}
-		pd.files = append(pd.files, parsedFile{name: n, fset: fset, f: f})
-	}
+		return false
+	})
 	return pd
 }
 
@@ -196,12 +186,13 @@ func recvName(fd *ast.FuncDecl) string {
 // non-test file: a claim naming a repository test helper (declared
 // only in a _test.go file) must never count, and neither must one
 // whose declaration cannot be found at this ref. File claims are kept
-// as they are (TargetsFromClaims drops _test.go files).
-func claimRanges(tree Tree, modRoot string, claims []report.Claim) ([]report.Claim, map[string][]FuncRange) {
+// as they are (TargetsFromClaims drops _test.go files). tooBig lists
+// the directories of claims that were not found only because the
+// directory is over the read limits.
+func claimRanges(tree Tree, modRoot string, claims []report.Claim) (kept []report.Claim, ranges map[string][]FuncRange, tooBig []string) {
 	dirs := map[string]parsedDir{}
-	ranges := map[string][]FuncRange{}
+	ranges = map[string][]FuncRange{}
 	seen := map[string]bool{}
-	var kept []report.Claim
 	for _, c := range claims {
 		if c.Kind != report.ClaimFunction {
 			kept = append(kept, c)
@@ -242,6 +233,8 @@ func claimRanges(tree Tree, modRoot string, claims []report.Claim) ([]report.Cla
 		}
 		if found {
 			kept = append(kept, c)
+		} else if pd.truncated {
+			tooBig = append(tooBig, tdir)
 		}
 	}
 	for _, rs := range ranges {
@@ -250,13 +243,15 @@ func claimRanges(tree Tree, modRoot string, claims []report.Claim) ([]report.Cla
 	if len(ranges) == 0 {
 		ranges = nil
 	}
-	return kept, ranges
+	return kept, ranges, tooBig
 }
 
 // hasFuzzTarget reports whether a _test.go file in dir declares
-// func <name>(*testing.F).
-func hasFuzzTarget(tree Tree, dir, name string) bool {
-	for _, pf := range parseDir(tree, dir).files {
+// func <name>(*testing.F). truncated reports that it was not found
+// only because dir is over the read limits.
+func hasFuzzTarget(tree Tree, dir, name string) (found, truncated bool) {
+	pd := parseDir(tree, dir)
+	for _, pf := range pd.files {
 		if !strings.HasSuffix(pf.name, "_test.go") {
 			continue
 		}
@@ -267,12 +262,12 @@ func hasFuzzTarget(tree Tree, dir, name string) bool {
 			}
 			if star, ok := fd.Type.Params.List[0].Type.(*ast.StarExpr); ok {
 				if sel, ok := star.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "F" {
-					return true
+					return true, false
 				}
 			}
 		}
 	}
-	return false
+	return false, pd.truncated
 }
 
 // pocPaths returns where the PoC's files go, relative to the tree root

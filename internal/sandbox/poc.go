@@ -27,10 +27,57 @@ const (
 	maxFiles     = 64
 	maxFileBytes = 256 << 10
 	maxNameBytes = 255
-
-	// maxGoFilesPerDir bounds the package-clause reads per directory.
-	maxGoFilesPerDir = 256
 )
+
+// Per-directory bounds on the repository source Kritolith reads and
+// parses on the host (repository-controlled input). Hitting one is
+// never silent: what could not be read is reported as INCONCLUSIVE (a
+// claim or fuzz target lookup) or NEEDS_INFO (placement, which the PoC
+// directory hint fixes). Variables so tests can lower them.
+var (
+	// maxGoFilesPerDir bounds the Go files read per directory.
+	maxGoFilesPerDir = 256
+	// maxDirSourceBytes bounds the bytes of Go source read per
+	// directory (each file is also capped at maxTreeFileBytes).
+	maxDirSourceBytes int64 = 32 << 20
+)
+
+// readGoFiles calls fn with each Go file the go tool would consider in
+// dir (not hidden, not "_" prefixed), within the per-directory limits,
+// until fn returns true. truncated reports that a limit stopped it
+// before every file was seen.
+func readGoFiles(tree Tree, dir string, fn func(name string, src []byte) bool) (truncated bool) {
+	names, err := tree.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	var files int
+	var total int64
+	for _, n := range names {
+		if !strings.HasSuffix(n, ".go") || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
+			continue
+		}
+		if files >= maxGoFilesPerDir || total >= maxDirSourceBytes {
+			return true
+		}
+		files++
+		src, err := tree.ReadFile(path.Join(dir, n))
+		if err != nil {
+			continue
+		}
+		total += int64(len(src))
+		if fn(n, src) {
+			return false
+		}
+	}
+	return false
+}
+
+// dirLimitReason says why a directory was not read in full.
+func dirLimitReason(dir string) string {
+	return fmt.Sprintf("the package directory %s has more Go source than Kritolith reads (%d files or %d MiB)",
+		quote(dir), maxGoFilesPerDir, maxDirSourceBytes>>20)
+}
 
 // NeedsInfo is returned when the PoC, or where it belongs, cannot be
 // decided from what was supplied. The reporter (or operator) can fix
@@ -348,36 +395,22 @@ func isIgnoredDirName(n string) bool {
 }
 
 // dirHasPkg reports whether dir holds a Go file of package pkg (or
-// pkg_test). An empty pkg matches any Go file.
-func dirHasPkg(tree Tree, dir, pkg string) bool {
-	names, err := tree.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	read := 0
-	for _, n := range names {
-		if !strings.HasSuffix(n, ".go") || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
-			continue
-		}
-		if read++; read > maxGoFilesPerDir {
-			break
-		}
+// pkg_test). An empty pkg matches any Go file. truncated reports that
+// the answer was no only because the directory is over the read limits.
+func dirHasPkg(tree Tree, dir, pkg string) (found, truncated bool) {
+	truncated = readGoFiles(tree, dir, func(n string, src []byte) bool {
 		if pkg == "" {
+			found = true
 			return true
-		}
-		src, err := tree.ReadFile(path.Join(dir, n))
-		if err != nil {
-			continue
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), n, src, parser.PackageClauseOnly)
 		if err != nil || f == nil || f.Name == nil {
-			continue
+			return false
 		}
-		if f.Name.Name == pkg || f.Name.Name == pkg+"_test" {
-			return true
-		}
-	}
-	return false
+		found = f.Name.Name == pkg || f.Name.Name == pkg+"_test"
+		return found
+	})
+	return found, truncated && !found
 }
 
 // claimDirs returns the distinct, valid directories of verified
@@ -443,9 +476,14 @@ func PlacePoC(p PoC, tree Tree, hint string, claims []report.Claim) (string, err
 		}
 		return dirs[0], nil
 	}
+	var tooBig []string // directories over the read limits
 	for _, d := range dirs {
-		if dirHasPkg(tree, d, p.PkgName) {
+		ok, trunc := dirHasPkg(tree, d, p.PkgName)
+		if ok {
 			return d, nil
+		}
+		if trunc {
+			tooBig = append(tooBig, d)
 		}
 	}
 	if p.PkgName == "" {
@@ -468,8 +506,10 @@ func PlacePoC(p PoC, tree Tree, hint string, claims []report.Claim) (string, err
 		if err != nil {
 			return
 		}
-		if dirHasPkg(tree, dir, p.PkgName) {
+		if ok, trunc := dirHasPkg(tree, dir, p.PkgName); ok {
 			found = append(found, dir)
+		} else if trunc {
+			tooBig = append(tooBig, dir)
 		}
 		sort.Strings(names)
 		for _, n := range names {
@@ -486,6 +526,9 @@ func PlacePoC(p PoC, tree Tree, hint string, claims []report.Claim) (string, err
 	walk(".")
 	if truncated && len(found) < 2 {
 		return "", needs("repository too large to search; supply the PoC directory")
+	}
+	if len(found) == 0 && len(tooBig) > 0 {
+		return "", needs("%s, so the PoC's package may be there unseen; supply the PoC directory", dirLimitReason(tooBig[0]))
 	}
 	switch len(found) {
 	case 1:
