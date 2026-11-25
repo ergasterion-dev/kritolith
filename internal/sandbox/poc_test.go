@@ -52,6 +52,10 @@ func TestValidatePoCRejects(t *testing.T) {
 		{"fuzz abs", []report.Artifact{art("/testdata/fuzz/FuzzA/seed", "x")}},
 		{"fuzz bad name", []report.Artifact{art("testdata/fuzz/Fuzz.*/seed", "x")}},
 		{"fuzz two targets", []report.Artifact{art("testdata/fuzz/FuzzA/s", "x"), art("testdata/fuzz/FuzzB/s", "x")}},
+		{"seed alternation", []report.Artifact{art("testdata/fuzz/FuzzA/a|.*", "x")}},
+		{"seed space", []report.Artifact{art("testdata/fuzz/FuzzA/a b", "x")}},
+		{"seed dollar", []report.Artifact{art("testdata/fuzz/FuzzA/a$", "x")}},
+		{"seed paren", []report.Artifact{art("testdata/fuzz/FuzzA/a(", "x")}},
 		{"fuzz mixed with go", []report.Artifact{art("testdata/fuzz/FuzzA/s", "x"), art("a_test.go", testSrc)}},
 		{"no test func", []report.Artifact{art("a_test.go", "package a\n")}},
 		{"syntax error", []report.Artifact{art("a_test.go", "package a\nfunc (")}},
@@ -101,6 +105,10 @@ func TestValidatePoCShapes(t *testing.T) {
 		},
 		{
 			"fuzz seed", []report.Artifact{art("testdata/fuzz/FuzzA/seed1", "go test fuzz v1\n")},
+			PoC{Shape: ShapeFuzz, FuzzName: "FuzzA"},
+		},
+		{
+			"fuzz seed with dot and dash", []report.Artifact{art("testdata/fuzz/FuzzA/seed-1.bin", "x")},
 			PoC{Shape: ShapeFuzz, FuzzName: "FuzzA"},
 		},
 		{
@@ -433,4 +441,39 @@ func FuzzValidatePoC(f *testing.F) {
 			t.Fatalf("bad shape %q", p.Shape)
 		}
 	})
+}
+
+func TestPlacePoCWalkTruncated(t *testing.T) {
+	old := maxWalkDirs
+	maxWalkDirs = 3
+	defer func() { maxWalkDirs = old }()
+	tree := memTree{"a/a.go": pkgFile("other"), "b/b.go": pkgFile("other"), "c/c.go": pkgFile("other"), "d/d.go": pkgFile("graphql")}
+	poc := PoC{Shape: ShapeTest, PkgName: "graphql"}
+	if _, err := PlacePoC(poc, tree, "", nil); !isNeedsInfo(err) || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("err = %v, want too-large NeedsInfo", err)
+	}
+	// A hint or a verified claim directory decides before any walk.
+	if d, err := PlacePoC(poc, tree, "d", nil); err != nil || d != "d" {
+		t.Fatalf("hint: %q %v", d, err)
+	}
+	if d, err := PlacePoC(poc, tree, "", []report.Claim{claim(report.ClaimFunction, "d", report.TriYes)}); err != nil || d != "d" {
+		t.Fatalf("claim: %q %v", d, err)
+	}
+}
+
+func TestPlaceProgramModules(t *testing.T) {
+	tree := memTree{
+		"go.mod": "module m\n", "x/x.go": pkgFile("x"), "y/y.go": pkgFile("y"),
+		"sub/go.mod": "module m/sub\n", "sub/s.go": pkgFile("s"),
+	}
+	prog := PoC{Shape: ShapeProgram, PkgName: "main"}
+	two := func(a, b string) []report.Claim {
+		return []report.Claim{claim(report.ClaimFunction, a, report.TriYes), claim(report.ClaimFunction, b, report.TriYes)}
+	}
+	if d, err := PlacePoC(prog, tree, "", two("x", "y")); err != nil || d != "x" {
+		t.Fatalf("same module: %q %v", d, err)
+	}
+	if _, err := PlacePoC(prog, tree, "", two("x", "sub")); !isNeedsInfo(err) {
+		t.Fatalf("different modules: %v", err)
+	}
 }

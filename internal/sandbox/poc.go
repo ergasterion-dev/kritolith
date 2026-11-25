@@ -15,16 +15,19 @@ import (
 	"github.com/ergasterion-dev/kritolith/internal/report"
 )
 
+// maxWalkDirs bounds the directory search done by PlacePoC so a
+// hostile repository with an enormous tree cannot stall it. It is a
+// variable so tests can lower it.
+var maxWalkDirs = 5000
+
 // Limits on a PoC. They bound what hostile input can make us parse,
 // copy into a scratch tree and hand to the compiler.
+
 const (
 	maxFiles     = 64
 	maxFileBytes = 256 << 10
 	maxNameBytes = 255
 
-	// maxWalkDirs bounds the directory search done by PlacePoC so a
-	// hostile repository with an enormous tree cannot stall it.
-	maxWalkDirs = 5000
 	// maxGoFilesPerDir bounds the package-clause reads per directory.
 	maxGoFilesPerDir = 256
 )
@@ -137,6 +140,14 @@ func checkFuzzName(name string) error {
 	}
 	if err := checkComponent(seed); err != nil {
 		return err
+	}
+	// The seed is interpolated into -test.run '^FuzzName$/<seed>', a
+	// regular expression, so it is limited to [A-Za-z0-9._-]: no
+	// metacharacters, no spaces, so it can only match itself.
+	for _, r := range seed {
+		if !(r == '_' || r == '.' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return fmt.Errorf("fuzz seed name has a character outside [A-Za-z0-9._-]")
+		}
 	}
 	if !strings.HasPrefix(fuzz, "Fuzz") {
 		return fmt.Errorf("fuzz target name does not start with Fuzz")
@@ -413,13 +424,24 @@ func PlacePoC(p PoC, tree Tree, hint string, claims []report.Claim) (string, err
 	}
 	dirs := claimDirs(claims)
 	if p.Shape == ShapeProgram {
-		switch len(dirs) {
-		case 0:
+		if len(dirs) == 0 {
 			return ".", nil
-		case 1:
+		}
+		// Claims in different directories are fine when they share one
+		// module: the program is built from that module either way.
+		root0, err := ModuleRoot(tree, dirs[0])
+		if len(dirs) == 1 {
 			return dirs[0], nil
 		}
-		return "", needs("verified claims name %d different directories; supply the PoC directory", len(dirs))
+		if err != nil {
+			return "", needs("cannot find the module of the claimed directories; supply the PoC directory")
+		}
+		for _, d := range dirs[1:] {
+			if r, err := ModuleRoot(tree, d); err != nil || r != root0 {
+				return "", needs("verified claims span more than one module; supply the PoC directory")
+			}
+		}
+		return dirs[0], nil
 	}
 	for _, d := range dirs {
 		if dirHasPkg(tree, d, p.PkgName) {
@@ -431,9 +453,14 @@ func PlacePoC(p PoC, tree Tree, hint string, claims []report.Claim) (string, err
 	}
 	var found []string
 	visited := 0
+	truncated := false
 	var walk func(dir string)
 	walk = func(dir string) {
-		if visited >= maxWalkDirs || len(found) > 1 {
+		if len(found) > 1 {
+			return
+		}
+		if visited >= maxWalkDirs {
+			truncated = true
 			return
 		}
 		visited++
@@ -457,6 +484,9 @@ func PlacePoC(p PoC, tree Tree, hint string, claims []report.Claim) (string, err
 		}
 	}
 	walk(".")
+	if truncated && len(found) < 2 {
+		return "", needs("repository too large to search; supply the PoC directory")
+	}
 	switch len(found) {
 	case 1:
 		return found[0], nil
@@ -583,6 +613,9 @@ func localReplaceProblem(rhs []string) string {
 // (which would make the go tool download and run a different
 // toolchain). The reader is deliberately small and tolerant; it never
 // returns a parse error, only a rejection with a reason (*Inconclusive).
+// The check is textual: it says nothing about symlinks in the source
+// tree, so the Runner's copy step must not carry symlinks that escape
+// the module into the sandbox.
 func CheckGoMod(content []byte) error {
 	src := strings.TrimPrefix(string(content), "\xef\xbb\xbf")
 	block := ""
