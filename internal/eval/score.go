@@ -31,6 +31,9 @@ type Result struct {
 // Scoreboard summarizes an eval run.
 type Scoreboard struct {
 	Results []Result
+	// SandboxConfigured says whether the run had a working sandbox; the
+	// reproduction line says so when it did not.
+	SandboxConfigured bool
 }
 
 // Run checks every case. A failing case is recorded, not fatal.
@@ -135,6 +138,24 @@ func (s Scoreboard) DuplicateTop1Accuracy() (correct, total int) {
 	return correct, total
 }
 
+// ReproducedWithPoC returns how many real cases with a poc/ directory
+// ended REPRODUCED or REPRODUCED_FIXED_AT_HEAD, out of how many real
+// cases have a poc/ directory (whether or not a sandbox ran). This is
+// the instrument behind the ">= 60% of real reports with runnable PoCs
+// reproduce" target.
+func (s Scoreboard) ReproducedWithPoC() (reproduced, total int) {
+	for _, r := range s.Results {
+		if r.Case.Kind != KindReal || !r.Case.HasPoC {
+			continue
+		}
+		total++
+		if r.Err == nil && (r.Got == report.OutcomeReproduced || r.Got == report.OutcomeReproducedFixedAtHead) {
+			reproduced++
+		}
+	}
+	return reproduced, total
+}
+
 // Errors counts cases that failed to run.
 func (s Scoreboard) Errors() int {
 	n := 0
@@ -183,5 +204,14 @@ Summary
   duplicate top-1 accuracy:              %d/%d
   errors:                                %d
 `, len(s.Results), s.Matches(), len(s.Results), s.RealGroundingFailures(), s.RealLikelyDuplicates(), caught, total, s.FabricatedLikelyDuplicates(), dupCorrect, dupTotal, s.Errors())
+	if err != nil {
+		return err
+	}
+	n, m := s.ReproducedWithPoC()
+	note := ""
+	if !s.SandboxConfigured {
+		note = "; sandbox not configured"
+	}
+	_, err = fmt.Fprintf(w, "  Real reports with a runnable PoC reproduced: %d of %d (target >= 60%%)%s\n", n, m, note)
 	return err
 }

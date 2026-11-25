@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ergasterion-dev/kritolith/internal/config"
+	"github.com/ergasterion-dev/kritolith/internal/sandbox"
 )
 
 // TestEvalOnRepoCorpus runs the whole corpus, which clones about
@@ -99,5 +102,82 @@ func TestEvalCase(t *testing.T) {
 	errOut.Reset()
 	if code := run(context.Background(), []string{"eval", "--corpus", "../../testdata/corpus", "--case", "no-such-case"}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), `no corpus case "no-such-case"`) {
 		t.Fatalf("code = %d, stderr = %q", code, errOut.String())
+	}
+}
+
+// smallCorpus copies two placeholder-repo cases (nothing is cloned).
+func smallCorpus(t *testing.T) string {
+	t.Helper()
+	corpus := t.TempDir()
+	for _, id := range []string{"fab-018-needs-info", "fab-019-needs-info"} {
+		src := filepath.Join("..", "..", "testdata", "corpus", "fabricated", id)
+		dst := filepath.Join(corpus, "fabricated", id)
+		if err := os.MkdirAll(dst, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return corpus
+}
+
+// eval with --config builds the sandbox exactly as check does.
+func TestEvalWithSandboxConfig(t *testing.T) {
+	corpus := smallCorpus(t)
+	cfgPath := writeConfigFile(t, `{"sandbox":{"rootfs":"/srv/kritolith/rootfs"}}`)
+
+	t.Run("available", func(t *testing.T) {
+		fake := &fakeSandbox{}
+		built := 0
+		stubSandbox(t, func(string, string) error { return nil },
+			func(cfg config.Sandbox, _ sandbox.SourceResolver, workDir, dataDir string) (sandboxRunner, error) {
+				built++
+				if !strings.HasSuffix(workDir, "-sandbox") || workDir != dataDir+"-sandbox" {
+					t.Errorf("workDir %q, dataDir %q", workDir, dataDir)
+				}
+				return fake, nil
+			})
+		var out, errOut bytes.Buffer
+		if code := run(context.Background(), []string{"eval", "--corpus", corpus, "--config", cfgPath}, &out, &errOut); code != 0 {
+			t.Fatalf("code = %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
+		}
+		if built != 1 || fake.closes != 1 {
+			t.Fatalf("built %d, closed %d; want 1, 1", built, fake.closes)
+		}
+		if !strings.Contains(out.String(), "Real reports with a runnable PoC reproduced: 0 of 0 (target >= 60%)\n") {
+			t.Fatalf("scoreboard:\n%s", out.String())
+		}
+	})
+	t.Run("unavailable", func(t *testing.T) {
+		stubSandbox(t, func(string, string) error { return nil },
+			func(config.Sandbox, sandbox.SourceResolver, string, string) (sandboxRunner, error) {
+				return nil, &sandbox.Unavailable{Reason: "gVisor needs a Linux host"}
+			})
+		var out, errOut bytes.Buffer
+		if code := run(context.Background(), []string{"eval", "--corpus", corpus, "--config", cfgPath}, &out, &errOut); code != 0 {
+			t.Fatalf("code = %d\nstderr: %s", code, errOut.String())
+		}
+		if !strings.Contains(errOut.String(), "kritolith: sandbox unavailable: gVisor needs a Linux host; PoCs will not be run\n") ||
+			!strings.Contains(out.String(), "; sandbox not configured") {
+			t.Fatalf("stdout:\n%s\nstderr:\n%s", out.String(), errOut.String())
+		}
+	})
+}
+
+// Without --config, eval never touches the sandbox.
+func TestEvalWithoutConfigNoSandbox(t *testing.T) {
+	stubSandbox(t,
+		func(string, string) error { t.Error("sweep ran"); return nil },
+		func(config.Sandbox, sandbox.SourceResolver, string, string) (sandboxRunner, error) {
+			t.Error("sandbox built")
+			return nil, nil
+		})
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"eval", "--corpus", smallCorpus(t)}, &out, &errOut); code != 0 {
+		t.Fatalf("code = %d\nstderr: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "sandbox not configured") {
+		t.Fatalf("scoreboard:\n%s", out.String())
 	}
 }

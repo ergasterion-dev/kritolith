@@ -117,3 +117,49 @@ func TestDuplicateTop1Accuracy(t *testing.T) {
 		t.Errorf("DuplicateTop1Accuracy = %d/%d, want 1/2", correct, total)
 	}
 }
+
+func TestReproducedWithPoC(t *testing.T) {
+	cases := []Case{
+		{ID: "r1", Kind: KindReal, HasPoC: true, Meta: Meta{Expected: report.OutcomeReproducedFixedAtHead}},
+		{ID: "r2", Kind: KindReal, HasPoC: true, Meta: Meta{Expected: report.OutcomeReproduced}},
+		{ID: "r3", Kind: KindReal, HasPoC: true, Meta: Meta{Expected: report.OutcomeReproducedFixedAtHead}},
+		{ID: "r4", Kind: KindReal, HasPoC: true, Meta: Meta{Expected: report.OutcomeReproducedFixedAtHead}},
+		{ID: "r5", Kind: KindReal, Meta: Meta{Expected: report.OutcomeNeedsInfo}},                           // no poc/: not counted
+		{ID: "f1", Kind: KindFabricated, HasPoC: true, Meta: Meta{Expected: report.OutcomeReproduced}},      // fabricated: not counted
+		{ID: "r6", Kind: KindReal, HasPoC: true, Meta: Meta{Expected: report.OutcomeReproducedFixedAtHead}}, // errored: in M, not N
+	}
+	got := map[string]report.Outcome{
+		"r1": report.OutcomeReproducedFixedAtHead,
+		"r2": report.OutcomeReproduced,
+		"r3": report.OutcomeInconclusive,
+		"r4": report.OutcomeNotReproduced,
+		"r5": report.OutcomeReproduced,
+		"f1": report.OutcomeReproduced,
+	}
+	run := func(configured bool) (Scoreboard, string) {
+		sb := Run(context.Background(), cases, func(_ context.Context, c Case) (CheckResult, error) {
+			if c.ID == "r6" {
+				return CheckResult{Outcome: report.OutcomeReproduced}, errors.New("boom")
+			}
+			return CheckResult{Outcome: got[c.ID]}, nil
+		})
+		sb.SandboxConfigured = configured
+		var buf bytes.Buffer
+		if err := sb.Write(&buf); err != nil {
+			t.Fatal(err)
+		}
+		return sb, buf.String()
+	}
+	sb, out := run(true)
+	if n, m := sb.ReproducedWithPoC(); n != 2 || m != 5 {
+		t.Fatalf("ReproducedWithPoC = %d of %d, want 2 of 5", n, m)
+	}
+	want := "Real reports with a runnable PoC reproduced: 2 of 5 (target >= 60%)\n"
+	if !strings.Contains(out, want) || strings.Contains(out, "sandbox not configured") {
+		t.Fatalf("scoreboard missing %q (or says not configured):\n%s", want, out)
+	}
+	_, out = run(false)
+	if !strings.Contains(out, "Real reports with a runnable PoC reproduced: 2 of 5 (target >= 60%); sandbox not configured\n") {
+		t.Fatalf("scoreboard without a sandbox:\n%s", out)
+	}
+}

@@ -33,7 +33,12 @@ type Meta struct {
 	// the LIKELY_DUPLICATE verdict's top match actually points at that
 	// case's report, not merely that the outcome came out right.
 	ExpectedDuplicateOf string `json:"expected_duplicate_of,omitempty"`
-	Notes               string `json:"notes,omitempty"`
+	// PoCDir is the repository-relative directory the case's poc/ files
+	// belong in ("." is the repository root), passed to the sandbox as
+	// the operator's placement hint (report.Report.PoCDir). Only valid
+	// with a poc/ directory.
+	PoCDir string `json:"poc_dir,omitempty"`
+	Notes  string `json:"notes,omitempty"`
 }
 
 // Case is one corpus entry.
@@ -42,6 +47,8 @@ type Case struct {
 	Kind Kind
 	Dir  string
 	Meta Meta
+	// HasPoC: the case has a poc/ directory (a runnable PoC to try).
+	HasPoC bool
 }
 
 var caseIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -137,6 +144,16 @@ func loadCase(dir string, kind Kind) (Case, error) {
 			return fail(`fabricated case source must be "fabricated", got %q`, m.Source)
 		}
 	}
+	fi, err := os.Lstat(filepath.Join(dir, "poc"))
+	hasPoC := err == nil && fi.IsDir()
+	if m.PoCDir != "" {
+		if err := report.ValidatePoCDir(m.PoCDir); err != nil {
+			return fail("poc_dir: %v", err)
+		}
+		if !hasPoC {
+			return fail("poc_dir is set but the case has no poc/ directory")
+		}
+	}
 	if m.ExpectedDuplicateOf != "" {
 		if !caseIDRe.MatchString(m.ExpectedDuplicateOf) {
 			return fail("expected_duplicate_of must be a valid case id, got %q", m.ExpectedDuplicateOf)
@@ -145,7 +162,7 @@ func loadCase(dir string, kind Kind) (Case, error) {
 			return fail("expected_duplicate_of is only meaningful when expected_outcome is LIKELY_DUPLICATE")
 		}
 	}
-	return Case{ID: id, Kind: kind, Dir: dir, Meta: m}, nil
+	return Case{ID: id, Kind: kind, Dir: dir, Meta: m, HasPoC: hasPoC}, nil
 }
 
 // Select returns the cases named by ids, in corpus order, each once.

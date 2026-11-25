@@ -11,13 +11,8 @@ import (
 	"strings"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
-	"github.com/ergasterion-dev/kritolith/internal/dedupe"
 	"github.com/ergasterion-dev/kritolith/internal/eval"
-	"github.com/ergasterion-dev/kritolith/internal/ground"
 	"github.com/ergasterion-dev/kritolith/internal/intake/file"
-	"github.com/ergasterion-dev/kritolith/internal/llm"
-	"github.com/ergasterion-dev/kritolith/internal/pipeline"
-	"github.com/ergasterion-dev/kritolith/internal/store"
 )
 
 func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -72,40 +67,37 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		defer os.RemoveAll(tmp)
-		dir = tmp
+		// The data dir sits one level down so the sandbox's default work
+		// dir (a sibling, "<data>-sandbox") is inside tmp and is removed
+		// with it.
+		dir = filepath.Join(tmp, "data")
 	}
-	st, err := store.Open(ctx, dir)
+	// The same construction as `check`: with --config, the LLM router
+	// and (when configured) the sandbox; without it, deterministic
+	// extraction, grounding and dedupe only.
+	pr, err := newProcessor(ctx, cfg, dir, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	defer st.Close()
-	var router *llm.Router
-	if cfg != nil {
-		router, err = buildRouter(*cfg, nil)
-		if err != nil {
-			return fail(stderr, err)
-		}
-	}
-	p := pipeline.New(st).WithGround(ground.NewService(dir)).WithDedupe(dedupe.NewService(st, router))
-	if router != nil {
-		p = p.WithLLM(router)
-	}
+	defer pr.close()
 
 	sb := eval.Run(ctx, cases, func(ctx context.Context, c eval.Case) (eval.CheckResult, error) {
 		opts := file.Options{Repo: c.Meta.Repo, Ref: c.Meta.Ref, ReportPath: filepath.Join(c.Dir, "report.md")}
-		if st, err := os.Stat(filepath.Join(c.Dir, "poc")); err == nil && st.IsDir() {
+		if c.HasPoC {
 			opts.PoCDir = filepath.Join(c.Dir, "poc")
 		}
 		r, err := file.Load(opts)
 		if err != nil {
 			return eval.CheckResult{}, err
 		}
-		v, err := p.Run(ctx, r)
+		r.PoCDir = c.Meta.PoCDir
+		v, err := pr.run(ctx, r)
 		if err != nil {
 			return eval.CheckResult{}, err
 		}
 		return eval.CheckResult{Outcome: v.Outcome, ReportID: r.ID, Duplicates: v.Duplicates}, nil
 	})
+	sb.SandboxConfigured = pr.sandbox != nil
 	if err := sb.Write(stdout); err != nil {
 		return fail(stderr, err)
 	}

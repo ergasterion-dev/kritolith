@@ -170,3 +170,69 @@ func TestSelectDuplicateOfMissingCase(t *testing.T) {
 		t.Fatalf("Select error = %v, want it to name the missing case", err)
 	}
 }
+
+func writePoC(t *testing.T, root, kind, id string) {
+	t.Helper()
+	dir := filepath.Join(root, kind, id, "poc")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "poc_test.go"), []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadCorpusPoCDir(t *testing.T) {
+	root := t.TempDir()
+	writeCase(t, root, "real", "r1", `{"repo":"a/b","ref":"`+sha+`","expected_outcome":"REPRODUCED","source":"GO-1","poc_dir":"internal/validation"}`)
+	writePoC(t, root, "real", "r1")
+	writeCase(t, root, "real", "r2", `{"repo":"a/b","ref":"`+sha+`","expected_outcome":"REPRODUCED","source":"GO-2","poc_dir":"."}`)
+	writePoC(t, root, "real", "r2")
+	writeCase(t, root, "real", "r3", `{"repo":"a/b","ref":"`+sha+`","expected_outcome":"NEEDS_INFO","source":"GO-3"}`)
+	cases, err := LoadCorpus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cases[0].Meta.PoCDir != "internal/validation" || cases[1].Meta.PoCDir != "." || cases[2].Meta.PoCDir != "" {
+		t.Fatalf("poc_dir = %q, %q, %q", cases[0].Meta.PoCDir, cases[1].Meta.PoCDir, cases[2].Meta.PoCDir)
+	}
+	if !cases[0].HasPoC || !cases[1].HasPoC || cases[2].HasPoC {
+		t.Fatalf("HasPoC = %v, %v, %v", cases[0].HasPoC, cases[1].HasPoC, cases[2].HasPoC)
+	}
+}
+
+func TestLoadCorpusRejectsPoCDir(t *testing.T) {
+	for name, dir := range map[string]string{
+		"absolute":     "/etc",
+		"dot-dot":      "../x",
+		"inner dotdot": "a/../../x",
+		"not clean":    "a//b",
+		"trailing":     "a/",
+		"empty string": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			meta := `{"repo":"a/b","ref":"` + sha + `","expected_outcome":"REPRODUCED","source":"GO-1","poc_dir":"` + dir + `"}`
+			writeCase(t, root, "real", "r1", meta)
+			writePoC(t, root, "real", "r1")
+			_, err := LoadCorpus(root)
+			if dir == "" {
+				// An empty poc_dir is the same as none.
+				if err != nil {
+					t.Fatalf("empty poc_dir: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "poc_dir") {
+				t.Fatalf("poc_dir %q: err = %v", dir, err)
+			}
+		})
+	}
+	t.Run("without a poc directory", func(t *testing.T) {
+		root := t.TempDir()
+		writeCase(t, root, "real", "r1", `{"repo":"a/b","ref":"`+sha+`","expected_outcome":"REPRODUCED","source":"GO-1","poc_dir":"x"}`)
+		if _, err := LoadCorpus(root); err == nil || !strings.Contains(err.Error(), "poc_dir") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
