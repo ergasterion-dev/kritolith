@@ -18,5 +18,5 @@
   },
   "github": { "webhook_secret_env": "KRITOLITH_WEBHOOK_SECRET", "token_env": "GITHUB_TOKEN" },
   "smtp": { "addr": "smtp.example.org:587", "from": "kritolith@example.org", "username": "kritolith", "password_env": "KRITOLITH_SMTP_PASSWORD" },
-  "sandbox": { "runtime": "runsc", "rootfs": "/var/lib/kritolith/rootfs", "goproxy": "https://proxy.golang.org", "run_timeout_seconds": 120, "memory_mb": 2048, "cpus": 2 }
+  "sandbox": { "runtime": "runsc", "rootfs": "/srv/kritolith/rootfs", "work_dir": "/var/lib/kritolith-sandbox", "ignore_cgroups": false, "goproxy": "https://proxy.golang.org", "run_timeout_seconds": 120, "memory_mb": 2048, "cpus": 2 }
 }

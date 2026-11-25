@@ -429,6 +429,23 @@ func TestRunSandboxPassesFallback(t *testing.T) {
 	}
 }
 
+// The operator's PoC directory hint reaches the sandbox as
+// Request.PoCDirHint, unchanged: the sandbox validates it against the
+// tree it extracts.
+func TestRunSandboxPassesPoCDirHint(t *testing.T) {
+	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
+	for _, hint := range []string{"", "math", "../x"} {
+		fr := &fakeRunner{result: sandbox.Result{NeedsInfo: "the PoC directory is not a path inside the repository"}}
+		r := report.Report{ID: "R1", Repo: "a/b", ClaimedRef: sha, PoC: []report.Artifact{{Name: "p_test.go"}}, PoCDir: hint}
+		if _, err := New(&fakeStore{}).WithGround(fakeGrounder{resolved: true, resolvedRef: sha}).WithSandbox(fr).Run(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+		if len(fr.calls) != 1 || fr.calls[0].PoCDirHint != hint {
+			t.Fatalf("hint %q: calls = %+v", hint, fr.calls)
+		}
+	}
+}
+
 func TestRunSandboxLogSink(t *testing.T) {
 	const sha = "e1fcd82abba34df74614020343be8eb1fe85f0d9"
 	logs := map[string][]byte{"run": []byte("hostile output")}

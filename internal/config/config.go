@@ -56,6 +56,18 @@ type Sandbox struct {
 	CPUs                int    `json:"cpus,omitempty"`
 	PIDs                int    `json:"pids,omitempty"`
 	OutputLimitKB       int    `json:"output_limit_kb,omitempty"`
+	// WorkDir holds the sandbox's scratch directories, bundles and
+	// runtime state. Empty means a sibling of the data dir named
+	// "<data_dir>-sandbox". It must neither be, contain, nor lie inside
+	// the data dir: the data dir and its keys stay outside anything the
+	// sandbox could mount.
+	WorkDir string `json:"work_dir,omitempty"`
+	// IgnoreCgroups runs the runtime with --ignore-cgroups, so memory,
+	// CPU and process limits are NOT enforced by cgroups (rlimits and
+	// the wall clock still apply). Only for nested dev setups (runsc in
+	// a container) where cgroups cannot be configured; never in
+	// production. Kritolith warns loudly at startup when it is set.
+	IgnoreCgroups bool `json:"ignore_cgroups,omitempty"`
 }
 
 // Enabled reports whether a rootfs is configured.
@@ -105,6 +117,16 @@ func (s Sandbox) Validate() error {
 	}
 	if s.Rootfs != "" && filepath.Clean(s.Rootfs) != s.Rootfs {
 		return fmt.Errorf("sandbox.rootfs %q must be a clean path (no .., no trailing slash)", s.Rootfs)
+	}
+	if s.WorkDir != "" {
+		switch {
+		case strings.ContainsRune(s.WorkDir, 0) || !filepath.IsAbs(s.WorkDir):
+			return fmt.Errorf("sandbox.work_dir %q must be an absolute path", s.WorkDir)
+		case filepath.Clean(s.WorkDir) != s.WorkDir:
+			return fmt.Errorf("sandbox.work_dir %q must be a clean path (no .., no trailing slash)", s.WorkDir)
+		case s.WorkDir == "/":
+			return fmt.Errorf("sandbox.work_dir must not be /")
+		}
 	}
 	if s.GoProxy != "" {
 		if err := ValidateGoProxy(s.GoProxy); err != nil {

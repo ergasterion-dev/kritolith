@@ -143,7 +143,7 @@ func (p *Pipeline) Run(ctx context.Context, r report.Report) (report.Verdict, er
 	if p.sandbox != nil && res.GroundingRan && res.RefResolved && !verdict.HardClaimFailed(res.Claims) && len(r.PoC) > 0 {
 		out, logs := p.runSandbox(ctx, sandbox.Request{
 			Report: r, ResolvedRef: res.ResolvedRef, ViaFallback: res.ResolvedViaFallback,
-			Claims: res.Claims, Module: res.Module,
+			Claims: res.Claims, Module: res.Module, PoCDirHint: r.PoCDir,
 		})
 		res.SandboxRan = true
 		res.Sandbox = out

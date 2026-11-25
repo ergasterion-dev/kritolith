@@ -2,8 +2,10 @@ package report
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var (
@@ -49,3 +51,31 @@ func ValidateRef(s string) error {
 
 // IsFullSHA reports whether s is a full lowercase 40-hex commit SHA.
 func IsFullSHA(s string) bool { return shaRe.MatchString(s) }
+
+// MaxPoCDirLen bounds a PoC directory hint.
+const MaxPoCDirLen = 255
+
+// ValidatePoCDir checks a PoC directory hint (Report.PoCDir): a
+// repository-relative, clean, slash-separated path ("." is the
+// repository root) with no ".." component, no NUL, backslash or control
+// character, at most MaxPoCDirLen bytes. The sandbox re-checks the hint
+// against the tree it extracts; this only refuses obvious nonsense at
+// the edge.
+func ValidatePoCDir(s string) error {
+	switch {
+	case s == "" || len(s) > MaxPoCDirLen:
+		return fmt.Errorf("report: PoC dir must be 1..%d bytes", MaxPoCDirLen)
+	case strings.HasPrefix(s, "/"):
+		return fmt.Errorf("report: PoC dir %q must be relative to the repository root", s)
+	case strings.ContainsRune(s, '\\') || strings.IndexFunc(s, unicode.IsControl) >= 0:
+		return fmt.Errorf("report: PoC dir %q contains a backslash or control character", s)
+	case path.Clean(s) != s:
+		return fmt.Errorf("report: PoC dir %q must be a clean path", s)
+	}
+	for _, e := range strings.Split(s, "/") {
+		if e == ".." {
+			return fmt.Errorf("report: PoC dir %q must not contain ..", s)
+		}
+	}
+	return nil
+}

@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/dedupe"
@@ -27,9 +30,16 @@ type processor struct {
 	st       *store.Store
 	pipeline *pipeline.Pipeline
 	signer   *verdict.Signer // nil until `kritolith keygen` has been run
+	sandbox  sandboxRunner   // nil when the sandbox is off or unavailable
+
+	closeOnce sync.Once
 }
 
-func newProcessor(ctx context.Context, cfg *config.Config, dir string) (*processor, error) {
+// newProcessor opens the store under dir and builds the pipeline. With
+// a sandbox section in cfg it also builds the sandbox (see
+// buildSandbox); an unavailable sandbox is reported on stderr and the
+// processor carries on without it.
+func newProcessor(ctx context.Context, cfg *config.Config, dir string, stderr io.Writer) (*processor, error) {
 	st, err := store.Open(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -55,18 +65,41 @@ func newProcessor(ctx context.Context, cfg *config.Config, dir string) (*process
 			return nil, err
 		}
 	}
-	p := pipeline.New(st).WithGround(ground.NewService(dir)).WithDedupe(dedupe.NewService(st, router))
+	gs := ground.NewService(dir)
+	p := pipeline.New(st).WithGround(gs).WithDedupe(dedupe.NewService(st, router))
 	if router != nil {
 		p = p.WithLLM(router)
 	}
 	if pr.signer != nil {
 		p = p.WithSigner(pr.signer)
 	}
+	if cfg != nil && cfg.Sandbox.Enabled() {
+		sb, err := buildSandbox(cfg.Sandbox, gs, dir, stderr)
+		if err != nil {
+			st.Close()
+			return nil, err
+		}
+		if sb != nil {
+			pr.sandbox = sb
+			p = p.WithSandbox(sb).WithSandboxLogs(newSandboxLogSink(dir))
+		}
+	}
 	pr.pipeline = p
 	return pr, nil
 }
 
-func (pr *processor) close() { pr.st.Close() }
+// close releases the sandbox (its work dir lock) and the store. It is
+// safe to call more than once.
+func (pr *processor) close() {
+	pr.closeOnce.Do(func() {
+		if pr.sandbox != nil {
+			if err := pr.sandbox.Close(); err != nil {
+				slog.Default().Warn("sandbox: close", "error", err)
+			}
+		}
+		pr.st.Close()
+	})
+}
 
 // run takes r through the pipeline and returns its stored verdict.
 func (pr *processor) run(ctx context.Context, r report.Report) (report.Verdict, error) {

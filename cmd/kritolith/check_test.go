@@ -292,3 +292,36 @@ func TestCheckBlocksCloudWithoutAllowCloud(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckPoCDir(t *testing.T) {
+	poc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(poc, "poc_test.go"), []byte("package vuln\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := writeReport(t, "no ref report")
+	tests := []struct {
+		name    string
+		args    []string
+		want    int
+		wantErr string
+	}{
+		{"dot-dot", []string{"--poc", poc, "--poc-dir", "../x"}, 2, "--poc-dir"},
+		{"dot-dot inside", []string{"--poc", poc, "--poc-dir", "a/../../x"}, 2, "--poc-dir"},
+		{"absolute", []string{"--poc", poc, "--poc-dir", "/abs"}, 2, "--poc-dir"},
+		{"not clean", []string{"--poc", poc, "--poc-dir", "a/"}, 2, "--poc-dir"},
+		{"too long", []string{"--poc", poc, "--poc-dir", strings.Repeat("a", 256)}, 2, "--poc-dir"},
+		{"without --poc", []string{"--poc-dir", "math"}, 2, "--poc-dir needs --poc"},
+		{"valid", []string{"--poc", poc, "--poc-dir", "math"}, 0, ""},
+		{"repo root", []string{"--poc", poc, "--poc-dir", "."}, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"check", "--repo", "a/b", "--data-dir", filepath.Join(t.TempDir(), "data")}, tt.args...)
+			var out, errOut bytes.Buffer
+			code := run(context.Background(), append(args, p), &out, &errOut)
+			if code != tt.want || !strings.Contains(errOut.String(), tt.wantErr) {
+				t.Fatalf("code = %d, stderr = %q; want %d and %q", code, errOut.String(), tt.want, tt.wantErr)
+			}
+		})
+	}
+}

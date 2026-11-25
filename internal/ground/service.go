@@ -70,6 +70,14 @@ func (s *Service) Ground(ctx context.Context, r report.Report, claims []report.C
 	return GroundResult{Claims: grounded, RefResolved: resolved, ResolvedRef: commit, ViaFallback: viaFallback, Module: module}
 }
 
+// Mirror returns the git mirror Ground uses for repo: the same path
+// under the data dir and the same origin. Like OpenMirror it touches
+// neither disk nor network. The sandbox archives commits from it, after
+// grounding has cloned or fetched it.
+func (s *Service) Mirror(repo string) (*Mirror, error) {
+	return OpenMirror(s.dataDir, repo, s.originURL(repo))
+}
+
 func githubOriginURL(repo string) string {
 	return fmt.Sprintf("https://github.com/%s.git", repo)
 }

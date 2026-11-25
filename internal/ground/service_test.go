@@ -49,3 +49,36 @@ func TestServiceGroundDegradesOnCloneFailure(t *testing.T) {
 func TestServiceImplementsGrounder(t *testing.T) {
 	var _ Grounder = (*Service)(nil)
 }
+
+// Service.Mirror is the mirror Ground uses for a repository: the same
+// path under the data dir and the same origin.
+func TestServiceMirror(t *testing.T) {
+	dir := t.TempDir()
+	s := NewService(dir)
+	tests := []struct {
+		name, repo string
+		wantErr    bool
+	}{
+		{"valid", "owner/name", false},
+		{"invalid repo", "../etc", true},
+		{"empty", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := s.Mirror(tt.repo)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Mirror(%q) = %+v, want an error", tt.repo, m)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, _ := OpenMirror(dir, tt.repo, githubOriginURL(tt.repo))
+			if *m != *want {
+				t.Fatalf("Mirror = %+v, want %+v", m, want)
+			}
+		})
+	}
+}

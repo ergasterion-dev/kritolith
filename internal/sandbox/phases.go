@@ -211,6 +211,7 @@ func (r *Runner) runSpec(args, env []string, cwd string, mounts []Mount, network
 			Rootfs: r.cfg.Rootfs, Args: args, Env: env, Cwd: cwd, Mounts: mounts, Network: network,
 			MemoryMB: r.cfg.MemoryMB, CPUs: r.cfg.CPUs, PIDs: r.cfg.PIDs,
 			CPUSeconds: cpuSec, FileSizeKB: fileSizeKB, UID: r.uid, GID: r.gid,
+			Forbidden: append([]string(nil), r.forbidden...),
 		},
 		Timeout:     time.Duration(timeoutSec) * time.Second,
 		OutputLimit: r.cfg.OutputLimitKB * 1024,
@@ -377,7 +378,7 @@ func phaseFailure(ctx context.Context, phase string, out RunOutput, err error) s
 // container. hint is the placement hint; control attempts pass the
 // directory the ref attempt used. The scratch directory is removed on
 // every return path, including a panic.
-func (r *Runner) attemptAt(ctx context.Context, ref string, p PoC, hint string, claims []report.Claim) *attempt {
+func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, hint string, claims []report.Claim) *attempt {
 	a := &attempt{ref: ref, shape: p.Shape, sums: map[string]string{}, logs: map[string][]byte{}}
 	work, err := os.MkdirTemp(r.scratchRoot, orphanPrefix+"run-*")
 	if err != nil {
@@ -395,7 +396,7 @@ func (r *Runner) attemptAt(ctx context.Context, ref string, p PoC, hint string, 
 	}
 
 	// Prepare (host).
-	if err := r.src.Archive(ctx, ref, l.src); err != nil {
+	if err := src.Archive(ctx, ref, l.src); err != nil {
 		return a.fail("could not extract the source at the ref: " + report.Printable(err.Error()))
 	}
 	tree := DirTree(l.src)

@@ -1,6 +1,9 @@
 package report
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateRepo(t *testing.T) {
 	good := []string{"golang/net", "a/b.c", "a-b/c_d", "ergasterion-dev/kritolith"}
@@ -45,6 +48,24 @@ func TestIsFullSHA(t *testing.T) {
 	for in, want := range tests {
 		if got := IsFullSHA(in); got != want {
 			t.Errorf("IsFullSHA(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestValidatePoCDir(t *testing.T) {
+	good := []string{".", "math", "internal/validation", "v2/pkg_x", "a-b.c/d", strings.Repeat("a", 255)}
+	bad := []string{
+		"", "/abs", "../x", "..", "a/../b", "a/..", "./a", "a/", "a//b", "a/./b", "a\x00b", "a\\b", "a\nb",
+		strings.Repeat("a", 256),
+	}
+	for _, s := range good {
+		if err := ValidatePoCDir(s); err != nil {
+			t.Errorf("ValidatePoCDir(%q) = %v, want nil", s, err)
+		}
+	}
+	for _, s := range bad {
+		if err := ValidatePoCDir(s); err == nil {
+			t.Errorf("ValidatePoCDir(%q) = nil, want error", s)
 		}
 	}
 }

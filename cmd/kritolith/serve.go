@@ -74,7 +74,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(stderr, err)
 	}
-	pr, err := newProcessor(ctx, &cfg, dir)
+	pr, err := newProcessor(ctx, &cfg, dir, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}

@@ -135,6 +135,12 @@ func TestSandboxRejects(t *testing.T) {
 		{"proxy loopback userinfo", `{"sandbox":{"goproxy":"http://127.0.0.1@evil.com"}}`, "goproxy"},
 		{"rootfs not clean", `{"sandbox":{"rootfs":"/x/../y"}}`, "rootfs"},
 		{"rootfs trailing slash", `{"sandbox":{"rootfs":"/x/"}}`, "rootfs"},
+		{"relative work_dir", `{"sandbox":{"work_dir":"work"}}`, "work_dir"},
+		{"work_dir not clean", `{"sandbox":{"work_dir":"/x/../y"}}`, "work_dir"},
+		{"work_dir trailing slash", `{"sandbox":{"work_dir":"/x/y/"}}`, "work_dir"},
+		{"work_dir root", `{"sandbox":{"work_dir":"/"}}`, "work_dir"},
+		{"work_dir NUL", `{"sandbox":{"work_dir":"/x/\u0000y"}}`, "work_dir"},
+		{"ignore_cgroups not bool", `{"sandbox":{"ignore_cgroups":"yes"}}`, "ignore_cgroups"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,6 +149,27 @@ func TestSandboxRejects(t *testing.T) {
 				t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSandboxWorkDirAndCgroups(t *testing.T) {
+	c, err := Load(writeConfig(t, `{"sandbox":{"rootfs":"/x","work_dir":"/var/lib/kritolith-sandbox","ignore_cgroups":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Sandbox.WorkDir != "/var/lib/kritolith-sandbox" || !c.Sandbox.IgnoreCgroups {
+		t.Fatalf("sandbox = %+v", c.Sandbox)
+	}
+	d := c.Sandbox.WithDefaults()
+	if d.WorkDir != c.Sandbox.WorkDir || !d.IgnoreCgroups {
+		t.Fatalf("WithDefaults changed work_dir/ignore_cgroups: %+v", d)
+	}
+	c, err = Load(writeConfig(t, `{"sandbox":{"rootfs":"/x"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Sandbox.WorkDir != "" || c.Sandbox.IgnoreCgroups {
+		t.Fatalf("defaults: %+v; want no work_dir (the caller derives it) and cgroups on", c.Sandbox)
 	}
 }
 

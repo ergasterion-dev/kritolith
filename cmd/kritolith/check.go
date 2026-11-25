@@ -23,6 +23,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	repo := fs.String("repo", "", "repository as owner/name (required)")
 	ref := fs.String("ref", "", "commit SHA or tag the reporter tested")
 	poc := fs.String("poc", "", "directory containing PoC files")
+	pocDir := fs.String("poc-dir", "", "repository-relative directory the PoC belongs in (\".\" is the repository root); a hint you supply, needs --poc")
 	cfgPath := fs.String("config", "", "path to kritolith.json")
 	dataDir := fs.String("data-dir", "", "data directory (overrides config)")
 	asJSON := fs.Bool("json", false, "print the verdict as JSON")
@@ -31,7 +32,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	ghsa := fs.String("ghsa", "", "read the report from this GitHub security advisory (GHSA-xxxx-xxxx-xxxx) instead of a file; needs a token in GITHUB_TOKEN or GH_TOKEN")
 	apiURL := fs.String("github-api-url", github.DefaultAPIURL, "GitHub REST API base URL (GitHub Enterprise Server: https://host/api/v3)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: kritolith check --repo owner/name [--ref sha] [--poc dir] report.md")
+		fmt.Fprintln(stderr, "Usage: kritolith check --repo owner/name [--ref sha] [--poc dir [--poc-dir repo/rel/dir]] report.md")
 		fmt.Fprintln(stderr, "       kritolith check --repo owner/name [--ref sha] --ghsa GHSA-xxxx-xxxx-xxxx")
 		fs.PrintDefaults()
 	}
@@ -50,6 +51,20 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if *ghsa != "" && *poc != "" {
 		fmt.Fprintln(stderr, "kritolith: --poc cannot be combined with --ghsa: an advisory carries no PoC files")
 		return 2
+	}
+	if *pocDir != "" {
+		switch {
+		case *ghsa != "":
+			fmt.Fprintln(stderr, "kritolith: --poc-dir cannot be combined with --ghsa: an advisory carries no PoC files")
+			return 2
+		case *poc == "":
+			fmt.Fprintln(stderr, "kritolith: --poc-dir needs --poc: it says where the PoC files go")
+			return 2
+		}
+		if err := report.ValidatePoCDir(*pocDir); err != nil {
+			fmt.Fprintf(stderr, "kritolith: --poc-dir: %s\n", report.Printable(err.Error()))
+			return 2
+		}
 	}
 
 	// --config is always loaded when given, even if --data-dir is also
@@ -86,6 +101,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return fail(stderr, err)
 		}
+		r.PoCDir = *pocDir
 	}
 	return runReport(ctx, r, cfg, dir, output{json: *asJSON, bundle: *bundle, notify: *doNotify}, stdout, stderr)
 }
@@ -101,7 +117,7 @@ type output struct {
 // verdict. Every one-shot intake command ends here, so a report is
 // handled the same way however it arrived.
 func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir string, out output, stdout, stderr io.Writer) int {
-	pr, err := newProcessor(ctx, cfg, dir)
+	pr, err := newProcessor(ctx, cfg, dir, stderr)
 	if err != nil {
 		return fail(stderr, err)
 	}

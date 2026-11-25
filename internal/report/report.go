@@ -102,6 +102,12 @@ type Report struct {
 	Body       string     `json:"body"`
 	PoC        []Artifact `json:"poc"`
 	ReceivedAt time.Time  `json:"received_at"`
+	// PoCDir is an operator-supplied hint (`check --poc-dir`, or a
+	// corpus case's poc_dir): the repository-relative directory the PoC
+	// belongs in. It never comes from report text. ValidatePoCDir
+	// checks it at the edge and the sandbox re-checks it against the
+	// tree. It is not persisted in the store.
+	PoCDir string `json:"poc_dir,omitempty"`
 }
 
 // Claim is one checkable statement extracted from a report.

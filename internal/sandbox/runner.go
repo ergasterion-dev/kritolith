@@ -106,8 +106,14 @@ func Available(cfg config.Sandbox) error {
 // Runner runs PoCs in the sandbox. It is safe for concurrent use as far
 // as its driver is.
 type Runner struct {
-	cfg         config.Sandbox
-	src         Source
+	cfg config.Sandbox
+	src Source
+	// resolve, when set, picks the source per report repository and
+	// takes precedence over src.
+	resolve SourceResolver
+	// forbidden are host paths (the data directory, key files) that no
+	// container may mount; every ContainerSpec carries a copy.
+	forbidden   []string
 	d           driver
 	scratchRoot string
 	// uid/gid of the container user; chown when the host runs as root
@@ -117,9 +123,14 @@ type Runner struct {
 	ignoreCgroups bool
 	closer        func() error
 
-	raceOnce sync.Once
-	race     bool
+	raceOnce  sync.Once
+	race      bool
+	closeOnce sync.Once
 }
+
+// SourceResolver returns the Source for a report's repository
+// (owner/name). Production resolves the repository's git mirror.
+type SourceResolver func(repo string) (Source, error)
 
 // NewRunner builds a Runner around a driver. scratchRoot holds the
 // per-run scratch directories; it must be absolute, and must neither be
@@ -136,12 +147,12 @@ func NewRunner(cfg config.Sandbox, src Source, d driver, scratchRoot string) *Ru
 	return &Runner{cfg: cfg.WithDefaults(), src: src, d: d, scratchRoot: scratchRoot, uid: uid, gid: gid, chown: chown}
 }
 
-// New builds the production Runner: it checks Available, then creates
-// a runsc driver whose work dir (also the scratch root) is workDir.
-// Every failure is an *Unavailable. It does not sweep orphans: call
-// SweepOrphans(cfg.Runtime, workDir) at startup before New, since the
-// driver New creates holds the work dir lock. Close the Runner when
-// done.
+// New builds the production Runner around one Source: it checks
+// Available, then creates a runsc driver whose work dir (also the
+// scratch root) is workDir. Every failure is an *Unavailable. It does
+// not sweep orphans: call SweepOrphans(cfg.Runtime, workDir) at startup
+// before New, since the driver New creates holds the work dir lock.
+// Close the Runner when done.
 func New(cfg config.Sandbox, src Source, workDir string, ignoreCgroups bool) (*Runner, error) {
 	if err := Available(cfg); err != nil {
 		return nil, err
@@ -149,6 +160,22 @@ func New(cfg config.Sandbox, src Source, workDir string, ignoreCgroups bool) (*R
 	if src == nil {
 		return nil, &Unavailable{Reason: "no source repository mirror"}
 	}
+	return newProduction(cfg, src, nil, workDir, ignoreCgroups)
+}
+
+// NewWithResolver is New for a Runner that serves many repositories:
+// resolve picks the Source for each request's Report.Repo.
+func NewWithResolver(cfg config.Sandbox, resolve SourceResolver, workDir string, ignoreCgroups bool) (*Runner, error) {
+	if err := Available(cfg); err != nil {
+		return nil, err
+	}
+	if resolve == nil {
+		return nil, &Unavailable{Reason: "no source repository resolver"}
+	}
+	return newProduction(cfg, nil, resolve, workDir, ignoreCgroups)
+}
+
+func newProduction(cfg config.Sandbox, src Source, resolve SourceResolver, workDir string, ignoreCgroups bool) (*Runner, error) {
 	cfg = cfg.WithDefaults()
 	d, err := newRunscDriver(cfg.Runtime, workDir)
 	if err != nil {
@@ -156,18 +183,37 @@ func New(cfg config.Sandbox, src Source, workDir string, ignoreCgroups bool) (*R
 	}
 	d.ignoreCgroups = ignoreCgroups
 	r := NewRunner(cfg, src, d, d.workDir)
+	r.resolve = resolve
 	r.ignoreCgroups = ignoreCgroups
 	r.closer = d.Close
 	return r, nil
 }
 
+// WithForbidden adds host paths (the data directory, key files) that no
+// container this Runner builds may mount: each goes into every
+// ContainerSpec's Forbidden list, which BuildOCI enforces. Absolute
+// paths are cleaned; anything else is kept as given so BuildOCI refuses
+// the run rather than silently dropping the protection. Call it before
+// the Runner is shared.
+func (r *Runner) WithForbidden(paths ...string) *Runner {
+	for _, p := range paths {
+		if filepath.IsAbs(p) {
+			p = filepath.Clean(p)
+		}
+		r.forbidden = append(r.forbidden, p)
+	}
+	return r
+}
+
 // Close releases the driver (its work dir lock and any containers it
-// could not delete).
+// could not delete). It is idempotent.
 func (r *Runner) Close() error {
 	if r == nil || r.closer == nil {
 		return nil
 	}
-	return r.closer()
+	var err error
+	r.closeOnce.Do(func() { err = r.closer() })
+	return err
 }
 
 // Run runs req's PoC at the resolved ref and, after a reproduction, at
@@ -182,7 +228,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (res Result) {
 	switch {
 	case r == nil || !r.cfg.Enabled():
 		return Result{Skipped: "the sandbox is not configured"}
-	case r.d == nil || r.src == nil:
+	case r.d == nil || (r.src == nil && r.resolve == nil):
 		return Result{Skipped: "the sandbox is unavailable"}
 	case req.ResolvedRef == "":
 		return Result{Skipped: "no ref resolved, so there is nothing to run the PoC against"}
@@ -195,8 +241,14 @@ func (r *Runner) Run(ctx context.Context, req Request) (res Result) {
 	if err != nil {
 		return Result{NeedsInfo: inconclusiveOrNeeds(err)}
 	}
+	src := r.src
+	if r.resolve != nil {
+		if src, err = r.resolve(req.Report.Repo); err != nil || src == nil {
+			return Result{Skipped: "the repository's source mirror could not be opened"}
+		}
+	}
 
-	a := r.attemptAt(ctx, req.ResolvedRef, p, req.PoCDirHint, req.Claims)
+	a := r.attemptAt(ctx, src, req.ResolvedRef, p, req.PoCDirHint, req.Claims)
 	res.Logs = map[string][]byte{}
 	for k, v := range a.logs {
 		res.Logs[k] = v
@@ -218,7 +270,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (res Result) {
 		return res
 	}
 	res.Weak = a.signal.Weak
-	r.control(ctx, req, p, a, &res)
+	r.control(ctx, src, req, p, a, &res)
 	return res
 }
 
@@ -246,10 +298,10 @@ func (r *Runner) commonNotes(res *Result, req Request) {
 
 // control runs the PoC at the default-branch HEAD after a reproduction
 // at the ref and folds the result into res.
-func (r *Runner) control(ctx context.Context, req Request, p PoC, a *attempt, res *Result) {
+func (r *Runner) control(ctx context.Context, src Source, req Request, p PoC, a *attempt, res *Result) {
 	rr := res.Repro
 	rr.Phase = PhaseControl
-	head, err := r.src.DefaultBranchRef(ctx)
+	head, err := src.DefaultBranchRef(ctx)
 	switch {
 	case err != nil:
 		rr.ControlState = ControlUnavailable
@@ -261,7 +313,7 @@ func (r *Runner) control(ctx context.Context, req Request, p PoC, a *attempt, re
 		rr.Control = &c
 		rr.ControlState = ControlStillReproduces
 	default:
-		c := r.attemptAt(ctx, head, p, a.dir, req.Claims)
+		c := r.attemptAt(ctx, src, head, p, a.dir, req.Claims)
 		for k, v := range c.logs {
 			res.Logs[PhaseControl+"/"+k] = v
 		}

@@ -101,6 +101,7 @@ func TestCheckGHSAErrors(t *testing.T) {
 	}{
 		{"file and advisory", "tok", []string{"check", "--repo", "a/b", "--ghsa", testGHSA, p}, 2, "Usage: kritolith check", false},
 		{"poc with advisory", "tok", []string{"check", "--repo", "a/b", "--ghsa", testGHSA, "--poc", t.TempDir()}, 2, "--poc cannot be combined", false},
+		{"poc-dir with advisory", "tok", []string{"check", "--repo", "a/b", "--ghsa", testGHSA, "--poc-dir", "math"}, 2, "--poc-dir cannot be combined", false},
 		{"missing repo", "tok", []string{"check", "--ghsa", testGHSA}, 2, "Usage: kritolith check", false},
 		{"no token", "", []string{"check", "--repo", "a/b", "--ghsa", testGHSA, "--data-dir", dataDir, "--github-api-url", srv.URL}, 1, "GITHUB_TOKEN or GH_TOKEN", false},
 		{"bad id", "tok", []string{"check", "--repo", "a/b", "--ghsa", "GHSA-nope", "--data-dir", dataDir, "--github-api-url", srv.URL}, 1, "invalid advisory ID", false},
