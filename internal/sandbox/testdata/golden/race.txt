@@ -1,0 +1,65 @@
+==================
+WARNING: DATA RACE
+Read at 0x000100450228 by goroutine 8:
+  example.com/victim/pkg.Count()
+      /work/src/pkg/pkg.go:27 +0x64
+  example.com/victim/pkg.TestRace.gowrap1()
+      /work/src/pkg/poc_panic_test.go:18 +0x2c
+
+Previous write at 0x000100450228 by goroutine 11:
+  example.com/victim/pkg.Count()
+      /work/src/pkg/pkg.go:27 +0x7c
+  example.com/victim/pkg.TestRace.gowrap1()
+      /work/src/pkg/poc_panic_test.go:18 +0x2c
+
+Goroutine 8 (running) created at:
+  example.com/victim/pkg.TestRace()
+      /work/src/pkg/poc_panic_test.go:18 +0x50
+  testing.tRunner()
+      /usr/local/go/src/testing/testing.go:2036 +0x164
+  testing.(*T).Run.gowrap1()
+      /usr/local/go/src/testing/testing.go:2101 +0x34
+
+Goroutine 11 (finished) created at:
+  example.com/victim/pkg.TestRace()
+      /work/src/pkg/poc_panic_test.go:18 +0x50
+  testing.tRunner()
+      /usr/local/go/src/testing/testing.go:2036 +0x164
+  testing.(*T).Run.gowrap1()
+      /usr/local/go/src/testing/testing.go:2101 +0x34
+==================
+==================
+WARNING: DATA RACE
+Write at 0x000100450228 by goroutine 8:
+  example.com/victim/pkg.Count()
+      /work/src/pkg/pkg.go:27 +0x7c
+  example.com/victim/pkg.TestRace.gowrap1()
+      /work/src/pkg/poc_panic_test.go:18 +0x2c
+
+Previous write at 0x000100450228 by goroutine 9:
+  example.com/victim/pkg.Count()
+      /work/src/pkg/pkg.go:27 +0x7c
+  example.com/victim/pkg.TestRace.gowrap1()
+      /work/src/pkg/poc_panic_test.go:18 +0x2c
+
+Goroutine 8 (running) created at:
+  example.com/victim/pkg.TestRace()
+      /work/src/pkg/poc_panic_test.go:18 +0x50
+  testing.tRunner()
+      /usr/local/go/src/testing/testing.go:2036 +0x164
+  testing.(*T).Run.gowrap1()
+      /usr/local/go/src/testing/testing.go:2101 +0x34
+
+Goroutine 9 (running) created at:
+  example.com/victim/pkg.TestRace()
+      /work/src/pkg/poc_panic_test.go:18 +0x50
+  testing.tRunner()
+      /usr/local/go/src/testing/testing.go:2036 +0x164
+  testing.(*T).Run.gowrap1()
+      /usr/local/go/src/testing/testing.go:2101 +0x34
+==================
+--- FAIL: TestRace (0.00s)
+    testing.go:1712: race detected during execution of test
+FAIL
+FAIL	example.com/victim/pkg	0.475s
+FAIL

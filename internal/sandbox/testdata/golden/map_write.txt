@@ -1,0 +1,11 @@
+fatal error: concurrent map writes
+
+goroutine 83 [running]:
+internal/runtime/maps.fatal({0x10448b839?, 0x0?})
+	/usr/local/go/src/runtime/panic.go:1181 +0x20
+example.com/victim/pkg.MapWrite.func1()
+	/work/src/pkg/pkg.go:38 +0x60
+created by example.com/victim/pkg.MapWrite in goroutine 19
+	/work/src/pkg/pkg.go:35 +0x3c
+FAIL	example.com/victim/pkg	0.199s
+FAIL

@@ -1,0 +1,8 @@
+fatal error: all goroutines are asleep - deadlock!
+
+goroutine 1 [chan receive (nil chan)]:
+main.wait(...)
+	/work/src/cmd/dl/main.go:3
+main.main()
+	/work/src/cmd/dl/main.go:5 +0x24
+exit status 2

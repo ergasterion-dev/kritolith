@@ -1,0 +1,4 @@
+# example.com/victim/pkg [example.com/victim/pkg.test]
+pkg/zz_build_test.go:5:32: undefined: Missing
+FAIL	example.com/victim/pkg [build failed]
+FAIL

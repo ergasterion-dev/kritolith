@@ -1,0 +1,306 @@
+runtime: goroutine stack exceeds 1000000000-byte limit
+runtime: sp=0x72f40de603a0 stack=[0x72f40de60000, 0x72f42de60000]
+fatal error: stack overflow
+
+runtime stack:
+runtime.throw({0x102a8d4e4?, 0x1029bef0c?})
+	/usr/local/go/src/runtime/panic.go:1229 +0x38 fp=0x16d48a3a0 sp=0x16d48a370 pc=0x1029ed768
+runtime.newstack()
+	/usr/local/go/src/runtime/stack.go:1178 +0x498 fp=0x16d48a4d0 sp=0x16d48a3a0 pc=0x1029d43c8
+runtime.morestack()
+	/usr/local/go/src/runtime/asm_arm64.s:507 +0x70 fp=0x16d48a4d0 sp=0x16d48a4d0 pc=0x1029f2920
+
+goroutine 22 gp=0x72f3edd84d20 m=0 mp=0x102c14160 [running]:
+example.com/victim/pkg.Recurse(0x1ffffbb?)
+	/work/src/pkg/pkg.go:18 +0x3c fp=0x72f40de603a0 sp=0x72f40de603a0 pc=0x102a8060c
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de603c0 sp=0x72f40de603a0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de603e0 sp=0x72f40de603c0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60400 sp=0x72f40de603e0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60420 sp=0x72f40de60400 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60440 sp=0x72f40de60420 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60460 sp=0x72f40de60440 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60480 sp=0x72f40de60460 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de604a0 sp=0x72f40de60480 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de604c0 sp=0x72f40de604a0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de604e0 sp=0x72f40de604c0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60500 sp=0x72f40de604e0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60520 sp=0x72f40de60500 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60540 sp=0x72f40de60520 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60560 sp=0x72f40de60540 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60580 sp=0x72f40de60560 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de605a0 sp=0x72f40de60580 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de605c0 sp=0x72f40de605a0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de605e0 sp=0x72f40de605c0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60600 sp=0x72f40de605e0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60620 sp=0x72f40de60600 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60640 sp=0x72f40de60620 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60660 sp=0x72f40de60640 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de60680 sp=0x72f40de60660 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f40de606a0 sp=0x72f40de60680 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+...33554268 frames elided...
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fc80 sp=0x72f42de5fc60 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x72f3edda4e38?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fca0 sp=0x72f42de5fc80 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102a4701f?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fcc0 sp=0x72f42de5fca0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fce0 sp=0x72f42de5fcc0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fd00 sp=0x72f42de5fce0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102a46ff0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fd20 sp=0x72f42de5fd00 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fd40 sp=0x72f42de5fd20 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102a4701f?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fd60 sp=0x72f42de5fd40 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102ac61da?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fd80 sp=0x72f42de5fd60 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102a46ff0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fda0 sp=0x72f42de5fd80 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102a4701f?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fdc0 sp=0x72f42de5fda0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fde0 sp=0x72f42de5fdc0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102a46ff0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fe00 sp=0x72f42de5fde0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x1?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fe20 sp=0x72f42de5fe00 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x72f3ede000f0?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fe40 sp=0x72f42de5fe20 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x102b64f50?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fe60 sp=0x72f42de5fe40 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x6c?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fe80 sp=0x72f42de5fe60 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x72f3edda4ed8?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fea0 sp=0x72f42de5fe80 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x15ad97efb?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fec0 sp=0x72f42de5fea0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x6c?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5fee0 sp=0x72f42de5fec0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x72f3edda4f38?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5ff00 sp=0x72f42de5fee0 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x2855c67002a47020?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5ff20 sp=0x72f42de5ff00 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.Recurse(0x72f3edda4f58?)
+	/work/src/pkg/pkg.go:19 +0x20 fp=0x72f42de5ff40 sp=0x72f42de5ff20 pc=0x102a805f0
+example.com/victim/pkg.Recurse(...)
+	/work/src/pkg/pkg.go:19
+example.com/victim/pkg.TestStackOverflow(0x72f3eddfe248?)
+	/work/src/pkg/poc_panic_test.go:12 +0x20 fp=0x72f42de5ff60 sp=0x72f42de5ff40 pc=0x102a80920
+testing.tRunner(0x72f3eddfe248, 0x102be8440)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4 fp=0x72f42de5ffb0 sp=0x72f42de5ff60 pc=0x102a470b4
+testing.(*T).Run.gowrap1()
+	/usr/local/go/src/testing/testing.go:2101 +0x20 fp=0x72f42de5ffd0 sp=0x72f42de5ffb0 pc=0x102a47f80
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f42de5ffd0 sp=0x72f42de5ffd0 pc=0x1029f4834
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8
+
+goroutine 1 gp=0x72f3edca21e0 m=nil [chan receive]:
+runtime.gopark(0x1029f5340?, 0x72f3eddef998?, 0xe8?, 0x7b?, 0x104d8d228?)
+	/usr/local/go/src/runtime/proc.go:462 +0xbc fp=0x72f3eddef950 sp=0x72f3eddef930 pc=0x1029ed87c
+runtime.chanrecv(0x72f3edd92300, 0x72f3eddefa57, 0x1)
+	/usr/local/go/src/runtime/chan.go:667 +0x470 fp=0x72f3eddef9d0 sp=0x72f3eddef950 pc=0x1029847e0
+runtime.chanrecv1(0x102c130e0?, 0x102beca20?)
+	/usr/local/go/src/runtime/chan.go:509 +0x14 fp=0x72f3eddefa00 sp=0x72f3eddef9d0 pc=0x102984364
+testing.(*T).Run(0x72f3eddfe008, {0x102a8df6b?, 0x72f3eddefb18?}, 0x102be8440)
+	/usr/local/go/src/testing/testing.go:2109 +0x3bc fp=0x72f3eddefae0 sp=0x72f3eddefa00 pc=0x102a47e5c
+testing.runTests.func1(0x72f3eddfe008)
+	/usr/local/go/src/testing/testing.go:2585 +0x38 fp=0x72f3eddefb20 sp=0x72f3eddefae0 pc=0x102a49c48
+testing.tRunner(0x72f3eddfe008, 0x72f3eddefc48)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4 fp=0x72f3eddefb70 sp=0x72f3eddefb20 pc=0x102a470b4
+testing.runTests({0x102a8e4ff, 0x12}, {0x102a8f878, 0x16}, 0x72f3eddb6018, {0x102c0e4c0, 0xe, 0xe}, {0x8080786a1b564574?, 0x102a8d6ed?, ...})
+	/usr/local/go/src/testing/testing.go:2583 +0x3f0 fp=0x72f3eddefc70 sp=0x72f3eddefb70 pc=0x102a49b40
+testing.(*M).Run(0x72f3edda8140)
+	/usr/local/go/src/testing/testing.go:2443 +0x578 fp=0x72f3eddefeb0 sp=0x72f3eddefc70 pc=0x102a489b8
+main.main()
+	_testmain.go:72 +0x80 fp=0x72f3eddeff30 sp=0x72f3eddefeb0 pc=0x102a80d80
+runtime.main()
+	/usr/local/go/src/runtime/proc.go:290 +0x2b4 fp=0x72f3eddeffd0 sp=0x72f3eddeff30 pc=0x1029b9f14
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f3eddeffd0 sp=0x72f3eddeffd0 pc=0x1029f4834
+
+goroutine 17 gp=0x72f3edd843c0 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/usr/local/go/src/runtime/proc.go:462 +0xbc fp=0x72f3edd0c790 sp=0x72f3edd0c770 pc=0x1029ed87c
+runtime.goparkunlock(...)
+	/usr/local/go/src/runtime/proc.go:468
+runtime.forcegchelper()
+	/usr/local/go/src/runtime/proc.go:375 +0xb4 fp=0x72f3edd0c7d0 sp=0x72f3edd0c790 pc=0x1029ba234
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f3edd0c7d0 sp=0x72f3edd0c7d0 pc=0x1029f4834
+created by runtime.init.7 in goroutine 1
+	/usr/local/go/src/runtime/proc.go:363 +0x24
+
+goroutine 18 gp=0x72f3edd845a0 m=nil [GC sweep wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/usr/local/go/src/runtime/proc.go:462 +0xbc fp=0x72f3edd0cf70 sp=0x72f3edd0cf50 pc=0x1029ed87c
+runtime.goparkunlock(...)
+	/usr/local/go/src/runtime/proc.go:468
+runtime.bgsweep(0x72f3edd92000)
+	/usr/local/go/src/runtime/mgcsweep.go:279 +0x9c fp=0x72f3edd0cfb0 sp=0x72f3edd0cf70 pc=0x1029a39fc
+runtime.gcenable.gowrap1()
+	/usr/local/go/src/runtime/mgc.go:214 +0x20 fp=0x72f3edd0cfd0 sp=0x72f3edd0cfb0 pc=0x102994f20
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f3edd0cfd0 sp=0x72f3edd0cfd0 pc=0x1029f4834
+created by runtime.gcenable in goroutine 1
+	/usr/local/go/src/runtime/mgc.go:214 +0x6c
+
+goroutine 19 gp=0x72f3edd84780 m=nil [GC scavenge wait]:
+runtime.gopark(0x72f3edd92000?, 0x102a987a0?, 0x1?, 0x0?, 0x72f3edd84780?)
+	/usr/local/go/src/runtime/proc.go:462 +0xbc fp=0x72f3edd0d760 sp=0x72f3edd0d740 pc=0x1029ed87c
+runtime.goparkunlock(...)
+	/usr/local/go/src/runtime/proc.go:468
+runtime.(*scavengerState).park(0x102c13340)
+	/usr/local/go/src/runtime/mgcscavenge.go:425 +0x5c fp=0x72f3edd0d790 sp=0x72f3edd0d760 pc=0x1029a15ec
+runtime.bgscavenge(0x72f3edd92000)
+	/usr/local/go/src/runtime/mgcscavenge.go:653 +0x44 fp=0x72f3edd0d7b0 sp=0x72f3edd0d790 pc=0x1029a1b24
+runtime.gcenable.gowrap2()
+	/usr/local/go/src/runtime/mgc.go:215 +0x20 fp=0x72f3edd0d7d0 sp=0x72f3edd0d7b0 pc=0x102994ee0
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f3edd0d7d0 sp=0x72f3edd0d7d0 pc=0x1029f4834
+created by runtime.gcenable in goroutine 1
+	/usr/local/go/src/runtime/mgc.go:215 +0xac
+
+goroutine 20 gp=0x72f3edd84960 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/usr/local/go/src/runtime/proc.go:462 +0xbc fp=0x72f3edd0df70 sp=0x72f3edd0df50 pc=0x1029ed87c
+runtime.goparkunlock(...)
+	/usr/local/go/src/runtime/proc.go:468
+runtime.updateMaxProcsGoroutine()
+	/usr/local/go/src/runtime/proc.go:7095 +0xf4 fp=0x72f3edd0dfd0 sp=0x72f3edd0df70 pc=0x1029c8a04
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f3edd0dfd0 sp=0x72f3edd0dfd0 pc=0x1029f4834
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/usr/local/go/src/runtime/proc.go:7083 +0x48
+
+goroutine 21 gp=0x72f3edd84b40 m=nil [finalizer wait]:
+runtime.gopark(0x0?, 0x0?, 0xb8?, 0x5?, 0x1029ee444?)
+	/usr/local/go/src/runtime/proc.go:462 +0xbc fp=0x72f3edd10580 sp=0x72f3edd10560 pc=0x1029ed87c
+runtime.runFinalizers()
+	/usr/local/go/src/runtime/mfinal.go:210 +0x100 fp=0x72f3edd107d0 sp=0x72f3edd10580 pc=0x102993ff0
+runtime.goexit({})
+	/usr/local/go/src/runtime/asm_arm64.s:1447 +0x4 fp=0x72f3edd107d0 sp=0x72f3edd107d0 pc=0x1029f4834
+created by runtime.createfing in goroutine 1
+	/usr/local/go/src/runtime/mfinal.go:172 +0x78
+FAIL	example.com/victim/pkg	7.117s
+FAIL

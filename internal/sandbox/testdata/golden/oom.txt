@@ -1,0 +1,23 @@
+fatal error: runtime: out of memory
+
+runtime stack:
+runtime.throw({0x1029c1a2e?, 0x1fffffffffff?})
+	/usr/local/go/src/runtime/panic.go:1229 +0x38 fp=0x16d6ee6d0 sp=0x16d6ee6a0 pc=0x10292d768
+runtime.(*mheap).sysAlloc(0x102b5b860, 0x400000000, 0x102b6c578, 0x1)
+	/usr/local/go/src/runtime/malloc.go:821 +0x450 fp=0x16d6ee780 sp=0x16d6ee6d0 pc=0x1028fd0a0
+
+goroutine 18 gp=0x14000102380 m=4 mp=0x14000080808 [running]:
+runtime.systemstack_switch()
+	/usr/local/go/src/runtime/asm_arm64.s:201 +0x8 fp=0x140000a9c90 sp=0x140000a9c80 pc=0x102932b38
+runtime.mallocgc(0x400000000, 0x0, 0x0)
+	/usr/local/go/src/runtime/malloc.go:1171 +0x5c4 fp=0x140000a9d00 sp=0x140000a9c90 pc=0x1028fe8b4
+example.com/victim/pkg.Grow(0x400000000)
+	/work/src/pkg/pkg.go:64 +0x30 fp=0x140000a9d30 sp=0x140000a9d00 pc=0x102998bb0
+example.com/victim/pkg.TestGrow(0x14000103520?)
+	/work/src/pkg/poc_panic_test.go:50 +0x24 fp=0x140000a9d60 sp=0x140000a9d30 pc=0x102998c24
+testing.tRunner(0x14000103520, 0x1029c3f00)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4 fp=0x140000a9fb0 sp=0x140000a9d60 pc=0x10296a2d4
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8 fp=0x140000a9fd0 sp=0x140000a9fb0 pc=0x10296a7d8
+FAIL	example.com/victim/pkg	0.512s
+FAIL

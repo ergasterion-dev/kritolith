@@ -1,0 +1,20 @@
+--- FAIL: TestA (0.00s)
+panic: x [recovered, repanicked]
+
+goroutine 7 [running]:
+testing.tRunner.func1.2({0x1024b5a40, 0x1024e8940})
+	/usr/local/go/src/testing/testing.go:1974 +0x1a0
+testing.tRunner.func1()
+	/usr/local/go/src/testing/testing.go:1977 +0x318
+panic({0x1024b5a40?, 0x1024e8940?})
+	/usr/local/go/src/runtime/panic.go:860 +0x12c
+example.com/lib%2ev2.T.Boom(...)
+	/work/src/root.go:5
+example.com/lib%2ev2.TestA(0x1f6c2110c248?)
+	/work/src/root_test.go:8 +0x30
+testing.tRunner(0x1f6c2110c248, 0x1024e7df8)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8
+FAIL	example.com/lib.v2	0.151s
+FAIL

@@ -1,0 +1,6 @@
+--- FAIL: TestAssertNoClaim (0.00s)
+    poc_panic_test.go:29: Other() != 8
+FAIL
+coverage: 5.6% of statements in ./pkg
+FAIL	example.com/victim/pkg	0.236s
+FAIL

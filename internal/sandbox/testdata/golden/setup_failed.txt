@@ -1,0 +1,5 @@
+# example.com/victim/pkg
+pkg/zz_setup_test.go:5:2: no required module provides package example.com/nonexistent/thing; to add it:
+	go get example.com/nonexistent/thing
+FAIL	example.com/victim/pkg [setup failed]
+FAIL

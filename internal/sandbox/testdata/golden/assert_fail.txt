@@ -1,0 +1,6 @@
+--- FAIL: TestAssert (0.00s)
+    poc_panic_test.go:24: Clean(20) = 40, want 20
+FAIL
+coverage: 11.1% of statements in ./pkg
+FAIL	example.com/victim/pkg	0.481s
+FAIL

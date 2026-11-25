@@ -1,0 +1,18 @@
+--- FAIL: TestPanicPoC (0.00s)
+panic: runtime error: index out of range [5] with length 0 [recovered, repanicked]
+
+goroutine 19 [running]:
+testing.tRunner.func1.2({0x1049501a0, 0x3f81af92c018})
+	/usr/local/go/src/testing/testing.go:1974 +0x1a0
+testing.tRunner.func1()
+	/usr/local/go/src/testing/testing.go:1977 +0x318
+panic({0x1049501a0?, 0x3f81af92c018?})
+	/usr/local/go/src/runtime/panic.go:860 +0x12c
+example.com/victim/pkg.TestPanicPoC(0x3f81af978248?)
+	/work/src/pkg/poc_panic_test.go:34 +0x1c
+testing.tRunner(0x3f81af978248, 0x104960420)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8
+FAIL	example.com/victim/pkg	0.197s
+FAIL

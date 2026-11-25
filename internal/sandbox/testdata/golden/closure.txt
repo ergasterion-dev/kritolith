@@ -1,0 +1,23 @@
+--- FAIL: TestClosure (0.00s)
+panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]
+[signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x104194c48]
+
+goroutine 7 [running]:
+testing.tRunner.func1.2({0x1042d2da0, 0x10431ccc0})
+	/usr/local/go/src/testing/testing.go:1974 +0x1a0
+testing.tRunner.func1()
+	/usr/local/go/src/testing/testing.go:1977 +0x318
+panic({0x1042d2da0?, 0x10431ccc0?})
+	/usr/local/go/src/runtime/panic.go:860 +0x12c
+example.com/victim/pkg.Deref(...)
+	/work/src/pkg/pkg.go:14
+example.com/victim/pkg.TestClosure.func1(...)
+	/work/src/pkg/poc_panic_test.go:43
+example.com/victim/pkg.TestClosure(0x731e4246c248?)
+	/work/src/pkg/poc_panic_test.go:44 +0x8
+testing.tRunner(0x731e4246c248, 0x1042fc3e8)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8
+FAIL	example.com/victim/pkg	0.193s
+FAIL

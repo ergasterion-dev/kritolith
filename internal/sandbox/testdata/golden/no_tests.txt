@@ -1,0 +1,1 @@
+ok  	example.com/victim/pkg	0.195s [no tests to run]

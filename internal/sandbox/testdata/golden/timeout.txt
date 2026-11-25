@@ -1,0 +1,33 @@
+panic: test timed out after 2s
+	running tests:
+		TestHang (2s)
+
+goroutine 17 [running]:
+testing.(*M).startAlarm.func1()
+	/usr/local/go/src/testing/testing.go:2802 +0x2c4
+created by time.goFunc
+	/usr/local/go/src/time/sleep.go:215 +0x38
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0x49e3f08ae008, {0x102ee38c5?, 0x49e3f08a7b18?}, 0x103040400)
+	/usr/local/go/src/testing/testing.go:2109 +0x3bc
+testing.runTests.func1(0x49e3f08ae008)
+	/usr/local/go/src/testing/testing.go:2585 +0x38
+testing.tRunner(0x49e3f08ae008, 0x49e3f08a7c48)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4
+testing.runTests({0x102ee64ff, 0x12}, {0x102ee7878, 0x16}, 0x49e3f075a030, {0x1030664c0, 0xe, 0xe}, {0x80801f414208234b?, 0x102ee56ed?, ...})
+	/usr/local/go/src/testing/testing.go:2583 +0x3f0
+testing.(*M).Run(0x49e3f07ee140)
+	/usr/local/go/src/testing/testing.go:2443 +0x578
+main.main()
+	_testmain.go:72 +0x80
+
+goroutine 7 [select (no cases)]:
+example.com/victim/pkg.TestHang(0x49e3f08ae248?)
+	/work/src/pkg/poc_panic_test.go:40 +0x1c
+testing.tRunner(0x49e3f08ae248, 0x103040400)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8
+FAIL	example.com/victim/pkg	2.199s
+FAIL

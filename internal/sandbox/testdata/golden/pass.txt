@@ -1,0 +1,1 @@
+ok  	example.com/victim/pkg	0.196s	coverage: 11.1% of statements in ./pkg

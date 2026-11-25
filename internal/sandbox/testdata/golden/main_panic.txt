@@ -1,0 +1,10 @@
+panic: runtime error: index out of range [3] with length 0
+
+goroutine 1 [running]:
+example.com/victim/pkg.(*Parser).Parse(...)
+	/work/src/pkg/pkg.go:9
+main.crash(...)
+	/work/src/cmd/tool/main.go:5
+main.main()
+	/work/src/cmd/tool/main.go:7 +0x24
+exit status 2

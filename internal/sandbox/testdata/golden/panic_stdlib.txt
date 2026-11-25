@@ -1,0 +1,20 @@
+--- FAIL: TestPanicStdlib (0.00s)
+panic: non-positive interval for NewTicker [recovered, repanicked]
+
+goroutine 20 [running]:
+testing.tRunner.func1.2({0x102ae1b80, 0x102b15190})
+	/usr/local/go/src/testing/testing.go:1974 +0x1a0
+testing.tRunner.func1()
+	/usr/local/go/src/testing/testing.go:1977 +0x318
+panic({0x102ae1b80?, 0x102b15190?})
+	/usr/local/go/src/runtime/panic.go:860 +0x12c
+time.NewTicker(0x72d3184a0f58?)
+	/usr/local/go/src/time/tick.go:38 +0xbc
+example.com/victim/pkg.TestPanicStdlib(0x72d3184fe248?)
+	/work/src/pkg/poc_panic_test.go:37 +0x20
+testing.tRunner(0x72d3184fe248, 0x102b14428)
+	/usr/local/go/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go/src/testing/testing.go:2101 +0x3a8
+FAIL	example.com/victim/pkg	0.227s
+FAIL
