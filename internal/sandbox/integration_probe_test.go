@@ -676,10 +676,16 @@ func TestProbeFetchBridgeReachesNothingElse(t *testing.T) {
 func TestProbeSweepRemovesFetchBridges(t *testing.T) {
 	needSandbox(t)
 	workDir := filepath.Join(t.TempDir(), "work")
-	for _, d := range []string{workDir, filepath.Join(workDir, runscStateDir)} {
-		if err := ensurePrivateDir(d); err != nil {
-			t.Fatal(err)
-		}
+	// The work dir a crashed driver leaves: private, marked, with its
+	// runsc state dir.
+	if err := ensurePrivateDir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimWorkDir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateDir(filepath.Join(workDir, runscStateDir)); err != nil {
+		t.Fatal(err)
 	}
 	b, err := newHostBridges(workDir).Open(context.Background(), "https://proxy.golang.org")
 	if err != nil {

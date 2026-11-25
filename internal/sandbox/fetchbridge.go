@@ -105,8 +105,10 @@ func (s bridgeSubnet) ipNet() *net.IPNet {
 
 // pickSubnet chooses a random /30 in 169.254.X.Y/30, X in 1..168 (never
 // 169, so 169.254.169.254 is never an end of the pair), that overlaps
-// none of taken (the host's addresses and routes). rnd supplies the
-// randomness; it is crypto/rand in production.
+// none of taken (the networks of the host's interface addresses, from
+// hostNets; routes are not consulted, which is harmless because the
+// /30 exists only inside the bridge's two private namespaces). rnd
+// supplies the randomness; it is crypto/rand in production.
 func pickSubnet(rnd io.Reader, taken []*net.IPNet) (bridgeSubnet, error) {
 	for range 64 {
 		var b [2]byte

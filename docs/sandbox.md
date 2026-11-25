@@ -4,7 +4,7 @@ Kritolith runs a reporter's proof of concept inside gVisor (`runsc`). For each r
 
 This page covers what the operator has to set up, the config keys, what the sandbox does and does not isolate, and how to run the integration tests.
 
-> Status: the code, its unit tests and the `TestProbe*` integration tests pass on a real runsc (20261102.0, Ubuntu 24.04 arm64). On that host the corpus eval reproduces 15 of 20 real PoC reports. The hostile-fixture suite (`TestSandboxHostileFixtures`) and the whole-branch security review have not been re-run since the fixes from the first real-runsc run; do not run Kritolith on real embargoed reports until they pass.
+> Status: the code, its unit tests and the `TestProbe*` integration tests pass on a real runsc (20261102.0, Ubuntu 24.04 arm64; probes on 2026-11-25, re-run on 2026-11-26 after the security-review fixes). On that host the corpus eval reproduces 15 of 20 real PoC reports. The whole-branch security review is done and its findings are fixed. The hostile-fixture suite (`TestSandboxHostileFixtures`) has not been re-run since those fixes; do not run Kritolith on real embargoed reports until it passes.
 
 ## Requirements
 
@@ -175,34 +175,35 @@ What the tests cover:
 - `TestSandboxBenignPoCNotReproduced`: a passing test PoC ends `NOT_REPRODUCED`.
 - `TestSandboxPanicInClaimedCodeReproduced`: a panic through the claimed function, against a small git repository built in the test, ends `REPRODUCED`.
 - `TestSandboxPanicFixedAtHead`: the same PoC with HEAD fixed ends `REPRODUCED_FIXED_AT_HEAD`.
-- `TestSandboxHostileFixtures`: one subtest per directory in `testdata/sandbox/hostile/` (fork bomb, memory bomb, infinite loop, output flood, network attempt, reading `/proc`, host paths and the environment, writing to the source tree, reading the data directory, symlinks out of the tree, `go.mod` with a host `replace` or a `toolchain` line, `os.Exit(1)` only, a panic outside claimed code). Each must end `INCONCLUSIVE` or `NEEDS_INFO`, never as a reproduction, within its time bounds. After each one, the test checks that:
+- `TestSandboxHostileFixtures`: one subtest per directory in `testdata/sandbox/hostile/` (fork bomb, memory bomb, infinite loop, output flood, 256 MiB files written to `/out` until a write fails, network attempt, reading `/proc`, host paths and the environment, writing to the source tree, reading the data directory, symlinks out of the tree, `go.mod` with a host `replace` or a `toolchain` line, `os.Exit(1)` only, a panic outside claimed code). Each must end `INCONCLUSIVE` or `NEEDS_INFO`, never as a reproduction, within its time bounds. After each one, the test checks that:
   - a canary file outside the sandbox is unchanged;
   - the data dir key and the origin repository are unchanged;
   - no host HTTP listener was hit;
   - neither the host's canary environment variable nor any host secret appears in any log;
   - output stayed under the cap;
-  - no `kritolith-*` bundle, scratch dir, runsc container or runsc process is left.
+  - no `kritolith-*` bundle, scratch dir, mount, runsc container or runsc process is left.
+- `TestSandboxRunOutIsCapped`: the `/out` flood stops at the 8 MiB cap, the coverage profile still comes back, and no mount is left.
 - `TestSandboxHostilePoCNames`: PoC file names with `..`, absolute paths, separators or NUL end `NEEDS_INFO`, and no container runs.
 - `TestProbe*`: the runsc facts listed below.
 
 ## First run checklist
 
-Earlier tasks took these from the gVisor documentation and could not check them on a real runsc. Each has a tagged test. The first real run must pass all of them, or the code must be fixed before the sandbox is trusted.
+Earlier tasks took these from the gVisor documentation and could not check them on a real runsc. Each has a tagged test. The first real run must pass all of them, or the code must be fixed before the sandbox is trusted. Every `TestProbe*` below passed on runsc 20261102.0, Ubuntu 24.04 arm64, on 2026-11-25, and again on 2026-11-26 after the security-review fixes.
 
-- [ ] `TestProbeDevContents`: `/dev` holds `null`, `zero`, `urandom`, `tty` and runsc's own links (`fd`, `stdin`, `stdout`, `stderr`, `pts`, `ptmx`, `shm`), and nothing else (OCI `linux.devices` honoured).
-- [ ] `TestProbeRlimits`: `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE` and `RLIMIT_NPROC` from the OCI config are in force inside the sandbox.
-- [ ] `TestProbeMountPointsInReadOnlyRootfs`: the mount points `/src`, `/work/modcache`, `/work/gocache`, `/out` and `/poc`, which the read-only rootfs does not have, are created. The rootfs and read-only binds refuse writes. Writable binds take them, and a file written there lands on the host owned by the container user (through the gofer).
-- [ ] `TestProbeUser`: the container runs as the Runner's uid/gid (65534 when Kritolith runs as root).
-- [ ] `TestProbeGoOnPath`: `go` resolves through the container `PATH`, `gcc` is in the rootfs, and `-race` is used.
-- [ ] `TestProbeExitStatus`: contained exit codes come back unchanged, and a signal comes back as 128+n. The test also logs what a runsc start failure looks like (the exit-128 ambiguity).
-- [ ] `TestProbeWallClockKillLeavesNothing`: after a wall-clock kill, no sandbox or gofer process, runsc container, state entry or bundle remains.
-- [ ] `TestProbeCancelDuringCreate`: a run cancelled at any point, including while runsc is still creating the sandbox, leaves nothing behind.
-- [ ] `TestProbeRunscGlobalFlagsAccepted`: `kill`, `delete --force` and `list` accept the global flags (`--root`, `--platform`, `--network`, `--ignore-cgroups`), and `delete --force` of a missing container succeeds.
-- [ ] `TestProbeLongWorkDir`: a long work dir path stays within runsc's socket path limits.
-- [ ] `TestProbeNoNetworkInBuildAndRun`: with `--network=none`, nothing is reachable: not a host listener on loopback, not one on a host address, not a public address.
+- [x] `TestProbeDevContents`: `/dev` holds `null`, `zero`, `urandom`, `tty` and runsc's own links (`fd`, `stdin`, `stdout`, `stderr`, `pts`, `ptmx`, `shm`), and nothing else (OCI `linux.devices` honoured). Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeRlimits`: `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE` and `RLIMIT_NPROC` from the OCI config are in force inside the sandbox. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeMountPointsInReadOnlyRootfs`: the mount points `/src`, `/work/modcache`, `/work/gocache`, `/out` and `/poc`, which the read-only rootfs does not have, are created. The rootfs and read-only binds refuse writes. Writable binds take them, and a file written there lands on the host owned by the container user (through the gofer). Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeUser`: the container runs as the Runner's uid/gid (65534 when Kritolith runs as root). Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeGoOnPath`: `go` resolves through the container `PATH`, `gcc` is in the rootfs, and `-race` is used. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeExitStatus`: contained exit codes come back unchanged, and a signal comes back as 128+n. The test also logs what a runsc start failure looks like (the exit-128 ambiguity). Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeWallClockKillLeavesNothing`: after a wall-clock kill, no sandbox or gofer process, runsc container, state entry or bundle remains. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeCancelDuringCreate`: a run cancelled at any point, including while runsc is still creating the sandbox, leaves nothing behind. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeRunscGlobalFlagsAccepted`: `kill`, `delete --force` and `list` accept the global flags (`--root`, `--platform`, `--network`, `--ignore-cgroups`), and `delete --force` of a missing container succeeds. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeLongWorkDir`: a long work dir path stays within runsc's socket path limits. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
+- [x] `TestProbeNoNetworkInBuildAndRun`: with `--network=none`, nothing is reachable: not a host listener on loopback, not one on a host address, not a public address. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
 - [x] `TestProbeLoopbackProxyInFetchNetns`: an `http://127.0.0.1` GOPROXY (which config accepts) is reached through the fetch bridge's forwarder, and `go mod download` of a module without dependencies succeeds behind the bridge. It also logs the container namespace after the run (runsc has removed its addresses). Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25. The first real run, before the bridge, found that a fresh namespace has no usable network at all (even loopback was unreachable), which is why the bridge exists.
 - [x] `TestProbeFetchEgressToProxy` (`KRITOLITH_SANDBOX_INTERNET=1`): through the bridge the fetch phase reaches `https://proxy.golang.org`, and `go mod download` of a module with dependencies (`rsc.io/quote` v1.5.2 and its two dependencies) succeeds both with a complete `go.sum` and without one. Without `go.sum`, go consults the checksum database through the forwarder's `/sumdb/sum.golang.org/` relay (`proxy.golang.org` itself answers 404 to `/sumdb/sum.golang.org/supported`, so without the relay go would connect to `sum.golang.org` directly, which the bridge does not allow). Passed on the same host.
 - [x] `TestProbeFetchBridgeReachesNothingElse`: from inside the fetch container, host loopback ports, `localhost`, `1.1.1.1`, `https://proxy.golang.org`, `169.254.169.254`, every host interface address (on a wildcard-bound host listener's port and on 22), and the bridge's host IP on any port but the forwarder's are all unreachable, and no host listener sees a connection. The forwarder itself answers, in the same container, so the result is not vacuous. Passed on the same host.
 - [x] `TestProbeSweepRemovesFetchBridges`: a bridge left by a crashed run is removed (namespaces, links and marker) by the startup sweep. Passed on the same host.
-- [ ] `TestProbeCgroupMemoryLimit` (`KRITOLITH_SANDBOX_CGROUPS=1`): the memory limit kills an allocator. The test logs its exit status, which shows whether an OOM kill can be recognised.
+- [x] `TestProbeCgroupMemoryLimit` (`KRITOLITH_SANDBOX_CGROUPS=1`): the memory limit kills an allocator. The test logs its exit status, which shows whether an OOM kill can be recognised. Passed on runsc 20261102.0, Ubuntu 24.04 arm64, 2026-11-25; re-run 2026-11-26.
 - [ ] `TestSandboxHostileFixtures`, `TestSandboxHostilePoCNames`, and the benign and reproduction tests: all pass. Also note which signal fires for `go-2023-2328` when `kritolith eval` runs on the configured host (its expectation relies on the race signal).
