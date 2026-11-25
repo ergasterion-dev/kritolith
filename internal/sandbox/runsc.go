@@ -197,10 +197,23 @@ func newRunscDriver(runtime, workDir string) (*runscDriver, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range []string{workDir, filepath.Join(workDir, runscStateDir)} {
-		if err := ensurePrivateDir(p); err != nil {
-			return nil, err
-		}
+	// The ancestors are checked before anything is created under them
+	// and again after; the work dir itself must be new, empty or
+	// already marked as Kritolith's.
+	if err := checkAncestors(workDir); err != nil {
+		return nil, err
+	}
+	if err := ensurePrivateDir(workDir); err != nil {
+		return nil, err
+	}
+	if err := checkAncestors(workDir); err != nil {
+		return nil, err
+	}
+	if err := claimWorkDir(workDir); err != nil {
+		return nil, err
+	}
+	if err := ensurePrivateDir(filepath.Join(workDir, runscStateDir)); err != nil {
+		return nil, err
 	}
 	lock, err := lockWorkDir(workDir)
 	if err != nil {
@@ -630,9 +643,10 @@ func evalBestEffort(p string) string {
 }
 
 // SweepOrphans removes what a crashed or interrupted earlier run left
-// behind in workDir: runsc containers named kritolith-* whose bundle
-// dir is gone or older than this process, kritolith-* directories
-// directly in workDir older than this process, and the fetch bridges
+// behind in workDir: runsc containers named kritolith-<digits> whose
+// bundle dir is gone or older than this process, kritolith-<digits> and
+// kritolith-run-<digits> directories directly in workDir older than
+// this process, and the fetch bridges
 // (network namespaces and veth pairs named kvc<id>/kvb<id>) whose
 // marker files are in workDir/fetch-bridges. It never follows a
 // symlink and touches nothing else.
@@ -640,8 +654,10 @@ func evalBestEffort(p string) string {
 // Call it once at startup, before creating the driver for workDir: it
 // takes the work dir lock itself and refuses to run while a live driver
 // (in this or another process) holds it, and it refuses a work dir that
-// is a symlink, foreign-owned or group/world writable. Past that, it
-// keeps going through failures and returns them joined; the caller
+// is a symlink, foreign-owned or group/world writable, or has an unsafe
+// ancestor. It removes nothing (and says so) in a non-empty work dir
+// without the work dir marker. Past that, it keeps going through
+// failures and returns them joined; the caller
 // should log the error, not abort. A missing workDir or a runtime that
 // cannot be found means there is nothing of that kind to sweep.
 func SweepOrphans(runtime, workDir string) error {
@@ -658,6 +674,16 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 	}
 	if err := checkPrivateDir(workDir); err != nil {
 		return fmt.Errorf("sandbox: sweep: %w", err)
+	}
+	if err := checkAncestors(workDir); err != nil {
+		return fmt.Errorf("sandbox: sweep: %w", err)
+	}
+	// The sweep deletes by name: only in a directory Kritolith owns.
+	// An empty, unmarked dir has nothing to sweep.
+	if ok, empty, err := markerState(workDir); err != nil {
+		return fmt.Errorf("sandbox: sweep: nothing removed: %w", err)
+	} else if !ok && empty {
+		return nil
 	}
 	lock, err := lockWorkDir(workDir)
 	if err != nil {
@@ -702,10 +728,6 @@ func sweepOrphans(runtime, workDir string, before time.Time) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func isOrphanName(n string) bool {
-	return strings.HasPrefix(n, orphanPrefix) && len(n) > len(orphanPrefix) && !strings.ContainsAny(n, "/\x00")
 }
 
 // sweepContainers force-deletes kritolith-* containers in the state

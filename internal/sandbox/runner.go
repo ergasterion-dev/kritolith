@@ -180,6 +180,9 @@ func NewWithResolver(cfg config.Sandbox, resolve SourceResolver, workDir string,
 
 func newProduction(cfg config.Sandbox, src Source, resolve SourceResolver, workDir string, ignoreCgroups bool) (*Runner, error) {
 	cfg = cfg.WithDefaults()
+	if err := checkWorkDirOverlap(workDir, cfg.Rootfs, nil); err != nil {
+		return nil, &Unavailable{Reason: err.Error()}
+	}
 	d, err := newRunscDriver(cfg.Runtime, workDir)
 	if err != nil {
 		return nil, &Unavailable{Reason: err.Error()}
@@ -236,7 +239,8 @@ func (r *Runner) Run(ctx context.Context, req Request) (res Result) {
 		return Result{Skipped: "the sandbox is unavailable"}
 	case req.ResolvedRef == "":
 		return Result{Skipped: "no ref resolved, so there is nothing to run the PoC against"}
-	case !filepath.IsAbs(r.scratchRoot) || filepath.Clean(r.scratchRoot) == "/":
+	case !filepath.IsAbs(r.scratchRoot) || filepath.Clean(r.scratchRoot) == "/",
+		checkWorkDirOverlap(r.scratchRoot, r.cfg.Rootfs, r.forbidden) != nil:
 		return Result{Skipped: "the sandbox scratch directory is misconfigured"}
 	case checkProxy(r.cfg.GoProxy) != nil:
 		return Result{Skipped: "the sandbox goproxy is not a single allowed proxy URL"}

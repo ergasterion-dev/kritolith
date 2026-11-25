@@ -292,12 +292,12 @@ func TestRunnerCgroupNote(t *testing.T) {
 }
 
 func TestAvailableAndNew(t *testing.T) {
-	rootfs := t.TempDir()
-	runtimeBin := filepath.Join(t.TempDir(), "fake-runsc")
+	rootfs := realTempDir(t)
+	runtimeBin := filepath.Join(realTempDir(t), "fake-runsc")
 	if err := os.WriteFile(runtimeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	notDir := filepath.Join(t.TempDir(), "file")
+	notDir := filepath.Join(realTempDir(t), "file")
 	if err := os.WriteFile(notDir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestAvailableAndNew(t *testing.T) {
 			if !errors.As(err, &u) || !strings.Contains(u.Reason, tt.want) {
 				t.Fatalf("Available = %v, want *Unavailable containing %q", err, tt.want)
 			}
-			if r, err := New(tt.cfg, &fakeSource{}, filepath.Join(t.TempDir(), "work"), false); r != nil || !errors.As(err, &u) {
+			if r, err := New(tt.cfg, &fakeSource{}, filepath.Join(realTempDir(t), "work"), false); r != nil || !errors.As(err, &u) {
 				t.Fatalf("New = %v, %v; want *Unavailable", r, err)
 			}
 		})
@@ -341,7 +341,7 @@ func TestAvailableAndNew(t *testing.T) {
 	old := hostOS
 	hostOS = "linux"
 	defer func() { hostOS = old }()
-	work := filepath.Join(t.TempDir(), "work")
+	work := filepath.Join(realTempDir(t), "work")
 	r, err := New(good, &fakeSource{}, work, true)
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +353,7 @@ func TestAvailableAndNew(t *testing.T) {
 	if r2, err := New(good, &fakeSource{}, work, false); r2 != nil || !errors.As(err, &u) {
 		t.Fatalf("second New on a locked work dir = %v, %v; want *Unavailable", r2, err)
 	}
-	if _, err := New(good, nil, filepath.Join(t.TempDir(), "w2"), false); !errors.As(err, &u) {
+	if _, err := New(good, nil, filepath.Join(realTempDir(t), "w2"), false); !errors.As(err, &u) {
 		t.Fatalf("New without a source = %v", err)
 	}
 	if err := r.Close(); err != nil {

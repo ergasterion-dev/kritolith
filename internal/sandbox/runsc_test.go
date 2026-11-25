@@ -28,7 +28,7 @@ type fakeRunsc struct {
 
 func newFakeRunsc(t *testing.T, runBody, listBody string) fakeRunsc {
 	t.Helper()
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 	script := `#!/bin/sh
 D=` + q(dir) + `
@@ -99,7 +99,7 @@ func (f fakeRunsc) callsTo(t *testing.T, sub string) []string {
 
 func testSpec(t *testing.T) RunSpec {
 	t.Helper()
-	rootfs := filepath.Join(t.TempDir(), "rootfs")
+	rootfs := filepath.Join(realTempDir(t), "rootfs")
 	if err := os.Mkdir(rootfs, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestRunscDriverRun(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeRunsc(t, tt.body, ``)
-			workDir := t.TempDir()
+			workDir := realTempDir(t)
 			d, err := newRunscDriver(f.path, workDir)
 			if err != nil {
 				t.Fatal(err)
@@ -286,7 +286,7 @@ func assertChildDead(t *testing.T, f fakeRunsc) {
 
 func TestRunscDriverCancel(t *testing.T) {
 	f := newFakeRunsc(t, `sleep 30 & echo $! > "$D/child"; wait`, ``)
-	workDir := t.TempDir()
+	workDir := realTempDir(t)
 	d, err := newRunscDriver(f.path, workDir)
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +322,7 @@ func TestRunscDriverEnvironment(t *testing.T) {
 	t.Setenv("KRITOLITH_TEST_SECRET", "leak")
 	t.Setenv("HOME", "/home/leak")
 	f := newFakeRunsc(t, `:`, ``)
-	d, err := newRunscDriver(f.path, t.TempDir())
+	d, err := newRunscDriver(f.path, realTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestRunscDriverEnvironment(t *testing.T) {
 }
 
 func TestRunscDriverResolvesSymlinks(t *testing.T) {
-	base := t.TempDir()
+	base := realTempDir(t)
 	realRoot := filepath.Join(base, "real-rootfs")
 	realSrc := filepath.Join(base, "real-src")
 	data := filepath.Join(base, "data")
@@ -381,7 +381,7 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 
 	t.Run("links are resolved before BuildOCI", func(t *testing.T) {
 		f := newFakeRunsc(t, `:`, ``)
-		d, err := newRunscDriver(f.path, t.TempDir())
+		d, err := newRunscDriver(f.path, realTempDir(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -437,7 +437,7 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 	for _, tt := range refused {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeRunsc(t, `:`, ``)
-			workDir := t.TempDir()
+			workDir := realTempDir(t)
 			d, err := newRunscDriver(f.path, workDir)
 			if err != nil {
 				t.Fatal(err)
@@ -457,7 +457,7 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 
 func TestRunscDriverRejectsBadRunSpec(t *testing.T) {
 	f := newFakeRunsc(t, `:`, ``)
-	d, err := newRunscDriver(f.path, t.TempDir())
+	d, err := newRunscDriver(f.path, realTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestRunscDriverRejectsBadRunSpec(t *testing.T) {
 func TestNewRunscDriver(t *testing.T) {
 	f := newFakeRunsc(t, `:`, ``)
 	t.Run("missing runtime", func(t *testing.T) {
-		if _, err := newRunscDriver(filepath.Join(t.TempDir(), "no-runsc"), t.TempDir()); err == nil {
+		if _, err := newRunscDriver(filepath.Join(realTempDir(t), "no-runsc"), realTempDir(t)); err == nil {
 			t.Fatal("accepted a missing runtime")
 		}
 	})
@@ -492,7 +492,7 @@ func TestNewRunscDriver(t *testing.T) {
 	})
 	t.Run("runtime on PATH, state dir 0700", func(t *testing.T) {
 		t.Setenv("PATH", f.dir)
-		workDir := filepath.Join(t.TempDir(), "work")
+		workDir := filepath.Join(realTempDir(t), "work")
 		d, err := newRunscDriver("runsc", workDir)
 		if err != nil {
 			t.Fatal(err)
@@ -517,9 +517,9 @@ func TestSweepOrphans(t *testing.T) {
 	old := now.Add(-2 * time.Hour)
 	cutoff := now.Add(-time.Hour)
 
-	f := newFakeRunsc(t, `:`, `printf 'kritolith-orphan\nother-1\nkritolith-live\n'`)
-	workDir := t.TempDir()
-	outside := t.TempDir()
+	f := newFakeRunsc(t, `:`, `printf 'kritolith-9001\nother-1\nkritolith-2002\nkritolith-backup\n'`)
+	workDir := claimedWorkDir(t)
+	outside := realTempDir(t)
 	mk := func(name string, mtime time.Time) string {
 		p := filepath.Join(workDir, name)
 		if err := os.MkdirAll(filepath.Join(p, "inner"), 0o700); err != nil {
@@ -530,24 +530,26 @@ func TestSweepOrphans(t *testing.T) {
 		}
 		return p
 	}
-	mk("kritolith-old", old)
-	mk("kritolith-live", now)
+	mk("kritolith-1001", old)
+	mk("kritolith-run-1003", old)
+	mk("kritolith-backup", old)
+	mk("kritolith-2002", now)
 	mk("other-old", old)
-	nested := filepath.Join(workDir, "sub", "kritolith-nested")
+	nested := filepath.Join(workDir, "sub", "kritolith-4004")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(nested, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "kritolith-file"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, "kritolith-5005"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	victim := filepath.Join(outside, "victim")
 	if err := os.Mkdir(victim, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(workDir, "kritolith-link")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(workDir, "kritolith-6006")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -558,41 +560,43 @@ func TestSweepOrphans(t *testing.T) {
 	}
 	exists := func(p string) bool { _, err := os.Lstat(p); return err == nil }
 	for p, want := range map[string]bool{
-		filepath.Join(workDir, "kritolith-old"):  false,
-		filepath.Join(workDir, "kritolith-live"): true,
-		filepath.Join(workDir, "other-old"):      true,
-		nested:                                   true,
-		filepath.Join(workDir, "kritolith-file"): true,
-		filepath.Join(workDir, "kritolith-link"): true,
-		victim:                                   true,
+		filepath.Join(workDir, "kritolith-1001"):     false,
+		filepath.Join(workDir, "kritolith-run-1003"): false,
+		filepath.Join(workDir, "kritolith-backup"):   true,
+		filepath.Join(workDir, "kritolith-2002"):     true,
+		filepath.Join(workDir, "other-old"):          true,
+		nested:                                       true,
+		filepath.Join(workDir, "kritolith-5005"):     true,
+		filepath.Join(workDir, "kritolith-6006"):     true,
+		victim:                                       true,
 	} {
 		if exists(p) != want {
 			t.Fatalf("%s exists=%v, want %v", p, !want, want)
 		}
 	}
 	dels := strings.Join(f.callsTo(t, "delete"), "\n")
-	if !strings.Contains(dels, "delete --force kritolith-orphan") {
+	if !strings.Contains(dels, "delete --force kritolith-9001") {
 		t.Fatalf("orphan container not deleted: %q", f.calls(t))
 	}
-	if strings.Contains(dels, "other-1") || strings.Contains(dels, "kritolith-live") {
+	if strings.Contains(dels, "other-1") || strings.Contains(dels, "kritolith-2002") || strings.Contains(dels, "kritolith-backup") {
 		t.Fatalf("deleted a container it does not own or a live one: %q", dels)
 	}
 
 	if err := sweepOrphans(f.path, workDir, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if !exists(victim) || !exists(filepath.Join(workDir, "kritolith-link")) {
+	if !exists(victim) || !exists(filepath.Join(workDir, "kritolith-6006")) {
 		t.Fatal("sweep followed or removed a symlink")
 	}
-	if exists(filepath.Join(workDir, "kritolith-live")) {
+	if exists(filepath.Join(workDir, "kritolith-2002")) {
 		t.Fatal("stale dir kept after the cutoff passed it")
 	}
 }
 
 func TestSweepOrphansToleratesListFailure(t *testing.T) {
 	f := newFakeRunsc(t, `:`, `echo nope >&2; exit 1`)
-	workDir := t.TempDir()
-	p := filepath.Join(workDir, "kritolith-old")
+	workDir := claimedWorkDir(t)
+	p := filepath.Join(workDir, "kritolith-1001")
 	if err := os.Mkdir(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -610,8 +614,8 @@ func TestSweepOrphansToleratesListFailure(t *testing.T) {
 }
 
 func TestSweepOrphansMissingRuntime(t *testing.T) {
-	workDir := t.TempDir()
-	if err := SweepOrphans(filepath.Join(t.TempDir(), "no-runsc"), workDir); err != nil {
+	workDir := claimedWorkDir(t)
+	if err := SweepOrphans(filepath.Join(realTempDir(t), "no-runsc"), workDir); err != nil {
 		t.Fatalf("missing runtime: %v", err)
 	}
 }
@@ -638,22 +642,22 @@ func TestNewRunscDriverWorkDirChecks(t *testing.T) {
 		wantErr bool
 	}{
 		{"fresh dir is created 0700", func(t *testing.T) string {
-			return filepath.Join(t.TempDir(), "a", "work")
+			return filepath.Join(realTempDir(t), "a", "work")
 		}, false},
 		{"existing private dir is accepted", func(t *testing.T) string {
-			return t.TempDir()
+			return realTempDir(t)
 		}, false},
 		{"root is refused", func(t *testing.T) string { return "/" }, true},
 		{"single component is refused", func(t *testing.T) string { return "/kritolith" }, true},
 		{"symlinked work dir is refused", func(t *testing.T) string {
-			p := filepath.Join(t.TempDir(), "link")
-			if err := os.Symlink(t.TempDir(), p); err != nil {
+			p := filepath.Join(realTempDir(t), "link")
+			if err := os.Symlink(realTempDir(t), p); err != nil {
 				t.Fatal(err)
 			}
 			return p
 		}, true},
 		{"group or world writable work dir is refused", func(t *testing.T) string {
-			p := filepath.Join(t.TempDir(), "open")
+			p := filepath.Join(realTempDir(t), "open")
 			if err := os.Mkdir(p, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -663,14 +667,14 @@ func TestNewRunscDriverWorkDirChecks(t *testing.T) {
 			return p
 		}, true},
 		{"symlinked state dir is refused", func(t *testing.T) string {
-			p := t.TempDir()
-			if err := os.Symlink(t.TempDir(), filepath.Join(p, runscStateDir)); err != nil {
+			p := realTempDir(t)
+			if err := os.Symlink(realTempDir(t), filepath.Join(p, runscStateDir)); err != nil {
 				t.Fatal(err)
 			}
 			return p
 		}, true},
 		{"writable state dir is refused", func(t *testing.T) string {
-			p := t.TempDir()
+			p := realTempDir(t)
 			s := filepath.Join(p, runscStateDir)
 			if err := os.Mkdir(s, 0o700); err != nil {
 				t.Fatal(err)
@@ -681,7 +685,7 @@ func TestNewRunscDriverWorkDirChecks(t *testing.T) {
 			return p
 		}, true},
 		{"work dir that is a file is refused", func(t *testing.T) string {
-			p := filepath.Join(t.TempDir(), "file")
+			p := filepath.Join(realTempDir(t), "file")
 			if err := os.WriteFile(p, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -734,7 +738,7 @@ func TestNewRunscDriverRefusesForeignOwner(t *testing.T) {
 		t.Skip("needs root to chown a dir to another user")
 	}
 	f := newFakeRunsc(t, `:`, ``)
-	p := filepath.Join(t.TempDir(), "foreign")
+	p := filepath.Join(realTempDir(t), "foreign")
 	if err := os.Mkdir(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +753,7 @@ func TestNewRunscDriverRefusesForeignOwner(t *testing.T) {
 
 func TestRunscDriverLocksWorkDir(t *testing.T) {
 	f := newFakeRunsc(t, `:`, ``)
-	workDir := t.TempDir()
+	workDir := realTempDir(t)
 	d, err := newRunscDriver(f.path, workDir)
 	if err != nil {
 		t.Fatal(err)
@@ -775,7 +779,7 @@ func TestRunscDriverLocksWorkDir(t *testing.T) {
 
 func TestRunscDriverCleanupFailure(t *testing.T) {
 	f := newFakeRunsc(t, `echo out`, ``)
-	workDir := t.TempDir()
+	workDir := realTempDir(t)
 	d, err := newRunscDriver(f.path, workDir)
 	if err != nil {
 		t.Fatal(err)
@@ -829,7 +833,7 @@ func TestRunscDriverCleanupFailure(t *testing.T) {
 
 func TestRunscDriverCloseRetriesPending(t *testing.T) {
 	f := newFakeRunsc(t, `:`, ``)
-	d, err := newRunscDriver(f.path, t.TempDir())
+	d, err := newRunscDriver(f.path, realTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +854,7 @@ func TestRunscDriverCloseRetriesPending(t *testing.T) {
 
 func TestRunscDriverKillTimeoutIsAnError(t *testing.T) {
 	f := newFakeRunsc(t, `sleep 30 & echo $! > "$D/child"; wait`, ``)
-	d, err := newRunscDriver(f.path, t.TempDir())
+	d, err := newRunscDriver(f.path, realTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

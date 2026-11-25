@@ -201,13 +201,16 @@ func TestSandboxWorkDir(t *testing.T) {
 		{"through a symlink into the data dir", filepath.Join(linkIntoData, "work"), "", ""},
 		{"rootfs inside data dir", "", filepath.Join(data, "rootfs"), ""},
 		{"rootfs elsewhere", "", filepath.Join(base, "rootfs"), data + "-sandbox"},
+		{"rootfs inside the work dir", filepath.Join(base, "lib"), filepath.Join(base, "lib", "kritolith-rootfs", "go1.26.0"), ""},
+		{"rootfs contains the work dir", filepath.Join(base, "r", "work"), filepath.Join(base, "r"), ""},
+		{"rootfs inside the default work dir", "", filepath.Join(data+"-sandbox", "rootfs"), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := sandboxWorkDir(config.Sandbox{WorkDir: tt.workDir, Rootfs: tt.rootfs}, data)
 			if tt.want == "" {
-				if err == nil || !strings.Contains(err.Error(), "outside the data dir") {
-					t.Fatalf("sandboxWorkDir = %q, %v; want an 'outside the data dir' error", got, err)
+				if err == nil || !(strings.Contains(err.Error(), "outside the data dir") || strings.Contains(err.Error(), "overlaps the work dir")) {
+					t.Fatalf("sandboxWorkDir = %q, %v; want an overlap error", got, err)
 				}
 				return
 			}

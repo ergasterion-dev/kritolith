@@ -42,7 +42,7 @@ func readOnlyTree(t *testing.T, dir, outside string) {
 // outsideDir is a read-only directory the cleanup must not touch.
 func outsideDir(t *testing.T) string {
 	t.Helper()
-	o := filepath.Join(t.TempDir(), "outside")
+	o := filepath.Join(realTempDir(t), "outside")
 	if err := os.Mkdir(o, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func assertOutsideUntouched(t *testing.T, o string) {
 
 func TestRemoveAllForce(t *testing.T) {
 	outside := outsideDir(t)
-	root := filepath.Join(t.TempDir(), "kritolith-run-x")
+	root := filepath.Join(realTempDir(t), "kritolith-run-x")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestRemoveAllForce(t *testing.T) {
 
 	// A root that is itself a symlink is removed as a link, never
 	// followed.
-	link := filepath.Join(t.TempDir(), "link")
+	link := filepath.Join(realTempDir(t), "link")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestRemoveAllForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOutsideUntouched(t, outside)
-	if err := removeAllForce(filepath.Join(t.TempDir(), "missing")); err != nil {
+	if err := removeAllForce(filepath.Join(realTempDir(t), "missing")); err != nil {
 		t.Fatalf("missing path: %v", err)
 	}
 }
@@ -138,8 +138,8 @@ func TestRunnerCleanupFailureNoted(t *testing.T) {
 
 func TestSweepOrphansRemovesReadOnlyTrees(t *testing.T) {
 	outside := outsideDir(t)
-	workDir := t.TempDir()
-	p := filepath.Join(workDir, "kritolith-run-old")
+	workDir := claimedWorkDir(t)
+	p := filepath.Join(workDir, "kritolith-run-7007")
 	if err := os.Mkdir(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestSweepOrphansRemovesReadOnlyTrees(t *testing.T) {
 	if err := os.Chtimes(p, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepOrphans(filepath.Join(t.TempDir(), "no-runsc"), workDir, time.Now()); err != nil {
+	if err := sweepOrphans(filepath.Join(realTempDir(t), "no-runsc"), workDir, time.Now()); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 	if _, err := os.Lstat(p); !os.IsNotExist(err) {

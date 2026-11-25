@@ -126,6 +126,10 @@ func (s Sandbox) Validate() error {
 			return fmt.Errorf("sandbox.work_dir %q must be a clean path (no .., no trailing slash)", s.WorkDir)
 		case s.WorkDir == "/":
 			return fmt.Errorf("sandbox.work_dir must not be /")
+		case s.Rootfs != "" && (pathWithin(s.Rootfs, s.WorkDir) || pathWithin(s.WorkDir, s.Rootfs)):
+			// The sandbox deletes what it left in its work dir: the work
+			// dir must be a directory of its own, never the rootfs's parent.
+			return fmt.Errorf("sandbox.work_dir %q and sandbox.rootfs %q must not overlap; use a dedicated, empty directory as the work dir", s.WorkDir, s.Rootfs)
 		}
 	}
 	if s.GoProxy != "" {
@@ -263,4 +267,10 @@ func (c Config) NotifyAddresses(repo string) []string {
 		}
 	}
 	return nil
+}
+
+// pathWithin reports whether p is dir or lies inside it. Both are
+// clean absolute paths.
+func pathWithin(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }

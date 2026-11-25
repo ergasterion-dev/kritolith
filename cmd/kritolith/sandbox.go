@@ -84,7 +84,8 @@ func buildSandbox(cfg config.Sandbox, gs *ground.Service, dataDir string, stderr
 // dir or rootfs that is, contains, or lies inside the data dir, both as
 // written and with symlinks resolved: the data dir holds the database
 // and the signing key, which must stay outside anything the sandbox
-// could ever mount or write.
+// could ever mount or write. It also refuses a rootfs that overlaps the
+// work dir.
 func sandboxWorkDir(cfg config.Sandbox, dataDir string) (string, error) {
 	if !filepath.IsAbs(dataDir) {
 		return "", fmt.Errorf("sandbox: data dir %q must be absolute", dataDir)
@@ -108,6 +109,11 @@ func sandboxWorkDir(cfg config.Sandbox, dataDir string) (string, error) {
 		if overlaps(p.path, dataDir) || overlaps(realPath(p.path), realPath(dataDir)) {
 			return "", fmt.Errorf("sandbox: the sandbox %s %s must be outside the data dir %s (and must not contain it): the data dir holds the database and the signing key; set sandbox.work_dir / sandbox.rootfs elsewhere", p.name, p.path, dataDir)
 		}
+	}
+	// The sandbox deletes what it left in its work dir, so the rootfs
+	// must not be, contain or lie inside it.
+	if r := cfg.Rootfs; r != "" && (overlaps(r, workDir) || overlaps(realPath(r), realPath(workDir))) {
+		return "", fmt.Errorf("sandbox: the rootfs %s overlaps the work dir %s; the work dir must be a dedicated directory of its own", r, workDir)
 	}
 	return workDir, nil
 }

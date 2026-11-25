@@ -140,6 +140,9 @@ func TestSandboxRejects(t *testing.T) {
 		{"work_dir trailing slash", `{"sandbox":{"work_dir":"/x/y/"}}`, "work_dir"},
 		{"work_dir root", `{"sandbox":{"work_dir":"/"}}`, "work_dir"},
 		{"work_dir NUL", `{"sandbox":{"work_dir":"/x/\u0000y"}}`, "work_dir"},
+		{"rootfs inside work_dir", `{"sandbox":{"rootfs":"/var/lib/kritolith-rootfs/go1.26.0","work_dir":"/var/lib"}}`, "work_dir"},
+		{"rootfs equals work_dir", `{"sandbox":{"rootfs":"/srv/k","work_dir":"/srv/k"}}`, "work_dir"},
+		{"rootfs contains work_dir", `{"sandbox":{"rootfs":"/srv/k","work_dir":"/srv/k/work"}}`, "work_dir"},
 		{"ignore_cgroups not bool", `{"sandbox":{"ignore_cgroups":"yes"}}`, "ignore_cgroups"},
 	}
 	for _, tt := range tests {

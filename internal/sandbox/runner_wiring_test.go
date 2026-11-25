@@ -15,8 +15,8 @@ import (
 // Every container the Runner builds, at the ref and in the control,
 // carries the data dir (and every other forbidden path) in Forbidden.
 func TestRunnerForbiddenInEverySpec(t *testing.T) {
-	data := filepath.Join(t.TempDir(), "data")
-	keys := filepath.Join(t.TempDir(), "keys")
+	data := filepath.Join(realTempDir(t), "data")
+	keys := filepath.Join(realTempDir(t), "keys")
 	fx := newFixture(t, map[string]step{"ref/run": stepPanic, "head/run": stepPass})
 	if got := fx.runner.WithForbidden(data, keys); got != fx.runner {
 		t.Fatal("WithForbidden must return the runner it was called on")
@@ -44,7 +44,7 @@ func TestRunnerForbiddenInEverySpec(t *testing.T) {
 // A specs' Forbidden list is the Runner's own copy: one run cannot
 // change what the next run forbids.
 func TestRunnerForbiddenIsCopied(t *testing.T) {
-	data := filepath.Join(t.TempDir(), "data")
+	data := filepath.Join(realTempDir(t), "data")
 	fx := newFixture(t, map[string]step{"ref/run": stepPass})
 	fx.runner.WithForbidden(data)
 	spec := fx.runner.runSpec([]string{"true"}, nil, "/src", nil, "", 1, 1)
@@ -105,8 +105,8 @@ func TestRunnerSourceResolver(t *testing.T) {
 }
 
 func TestNewWithResolver(t *testing.T) {
-	rootfs := t.TempDir()
-	runtimeBin := filepath.Join(t.TempDir(), "fake-runsc")
+	rootfs := realTempDir(t)
+	runtimeBin := filepath.Join(realTempDir(t), "fake-runsc")
 	if err := os.WriteFile(runtimeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +117,14 @@ func TestNewWithResolver(t *testing.T) {
 
 	var u *Unavailable
 	hostOS = "darwin"
-	if r, err := NewWithResolver(good, resolve, filepath.Join(t.TempDir(), "w"), false); r != nil || !errors.As(err, &u) {
+	if r, err := NewWithResolver(good, resolve, filepath.Join(realTempDir(t), "w"), false); r != nil || !errors.As(err, &u) {
 		t.Fatalf("non-Linux NewWithResolver = %v, %v; want *Unavailable", r, err)
 	}
 	hostOS = "linux"
-	if r, err := NewWithResolver(good, nil, filepath.Join(t.TempDir(), "w"), false); r != nil || !errors.As(err, &u) {
+	if r, err := NewWithResolver(good, nil, filepath.Join(realTempDir(t), "w"), false); r != nil || !errors.As(err, &u) {
 		t.Fatalf("nil resolver = %v, %v; want *Unavailable", r, err)
 	}
-	r, err := NewWithResolver(good, resolve, filepath.Join(t.TempDir(), "w"), false)
+	r, err := NewWithResolver(good, resolve, filepath.Join(realTempDir(t), "w"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
