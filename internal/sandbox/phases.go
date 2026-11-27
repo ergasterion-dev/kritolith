@@ -244,18 +244,25 @@ func (r *Runner) fetchSpec(l layout, modRoot string, b fetchBridge) RunSpec {
 		b.NetnsPath(), r.cfg.FetchTimeoutSeconds, fetchFileSizeKB)
 }
 
-// buildArgs is the build command run in the module root.
-func buildArgs(p PoC, module, modRoot, dir string, race bool, coverPkgs []string) []string {
+// buildArgs is the build command run in the module root. noLinkname
+// adds the linker flag that turns the linkname check off (goversion.go).
+func buildArgs(p PoC, module, modRoot, dir string, race, noLinkname bool, coverPkgs []string) []string {
 	if p.Shape == ShapeProgram {
 		args := []string{"go", "build", "-o", path.Join(ctrOut, progBinary)}
 		if race {
 			args = append(args, "-race")
+		}
+		if noLinkname {
+			args = append(args, ldflagNoLinknameCheck)
 		}
 		return append(args, "./"+pocProgramDir)
 	}
 	args := []string{"go", "test", "-c", "-o", path.Join(ctrOut, testBinary), "-vet=off"}
 	if race {
 		args = append(args, "-race")
+	}
+	if noLinkname {
+		args = append(args, ldflagNoLinknameCheck)
 	}
 	if len(coverPkgs) > 0 {
 		pkgs := make([]string, len(coverPkgs))
@@ -363,6 +370,14 @@ func (r *Runner) raceAvailable() bool {
 		}
 	})
 	return r.race
+}
+
+// linknameCheckOff reports, once per Runner, whether builds pass the
+// linker flag that turns the linkname check off: the rootfs Go is 1.23
+// or newer (goversion.go).
+func (r *Runner) linknameCheckOff() bool {
+	r.linknameOnce.Do(func() { r.noLinkname = rootfsLinknameCheckOff(r.cfg.Rootfs) })
+	return r.noLinkname
 }
 
 // phaseFailure is the Inconclusive reason for a fetch or build that
@@ -494,7 +509,7 @@ func (r *Runner) attemptAt(ctx context.Context, src Source, ref string, p PoC, h
 	if err := r.ownScratch(work); err != nil {
 		return a.fail("could not hand the scratch directory to the sandbox user")
 	}
-	out, err = r.d.Run(ctx, r.buildSpec(l, buildArgs(p, module, modRoot, dir, race, coverPkgs), modRoot, race))
+	out, err = r.d.Run(ctx, r.buildSpec(l, buildArgs(p, module, modRoot, dir, race, r.linknameCheckOff(), coverPkgs), modRoot, race))
 	a.record(PhaseBuild, out.Output)
 	if err != nil || out.TimedOut || out.OOM || out.ExitCode != 0 {
 		why := phaseFailure(ctx, PhaseBuild, out, err)

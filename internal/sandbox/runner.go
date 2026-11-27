@@ -136,9 +136,11 @@ type Runner struct {
 	// phase cannot start and ends INCONCLUSIVE.
 	outFS outMounter
 
-	raceOnce  sync.Once
-	race      bool
-	closeOnce sync.Once
+	raceOnce     sync.Once
+	race         bool
+	linknameOnce sync.Once
+	noLinkname   bool
+	closeOnce    sync.Once
 
 	// mu guards closed; inflight counts Runs that Close waits for, so
 	// the driver (its work dir lock, its runsc state) outlives every

@@ -17,7 +17,7 @@ This page covers what the operator has to set up, the config keys, what the sand
 
 ## Producing the rootfs
 
-The rootfs is a plain directory holding an exported Go image. Every container mounts it read-only as `/`. It supplies `go` (`/usr/local/go/bin`), and the C compiler that `-race` needs (gcc ships in the official `golang` images on amd64 and arm64). Pin the image by version. The Go in the rootfs must be at least as new as the `go` line of the repositories you check: the sandbox runs with `GOTOOLCHAIN=local`, so a repository that needs a newer Go ends `INCONCLUSIVE` with that reason.
+The rootfs is a plain directory holding an exported Go image. Every container mounts it read-only as `/`. It supplies `go` (`/usr/local/go/bin`), and the C compiler that `-race` needs (gcc ships in the official `golang` images on amd64 and arm64). Pin the image by version, and use the newest stable Go. The Go in the rootfs must be at least as new as the `go` line of the repositories you check, at the claimed ref and at HEAD: the sandbox runs with `GOTOOLCHAIN=local`, so a repository that needs a newer Go ends `INCONCLUSIVE` with that reason.
 
 ```sh
 GO_IMAGE=golang:1.26.0-bookworm
@@ -42,6 +42,14 @@ Rules the code enforces, so choose the path with them in mind:
 - Keep it root-owned and not writable by anyone else. Every PoC runs on top of it.
 
 Without Docker, any tool that unpacks an OCI image into a directory will do (for example `skopeo copy` followed by `umoci unpack`). Run the same two checks afterwards.
+
+### Old refs under a new Go
+
+A new Go in the rootfs also builds old claimed refs, and those can fail to link. Since Go 1.23 the linker refuses `//go:linkname` references to standard library symbols that are not on its allow list, and later releases shorten that list. An old ref with an old dependency then fails in the build phase with a line like `link: github.com/klauspost/cpuid/v2: invalid reference to runtime.sched_getaffinity`, and the run ends `INCONCLUSIVE`.
+
+So when the rootfs Go is 1.23 or newer, every sandbox build (test, fuzz seed and program PoCs, at the claimed ref and at the HEAD control) passes `-ldflags=-checklinkname=0`, the linker flag that turns this one check off. The flag changes what links, not what the PoC can do when it runs: the container, the limits and the network rules are the same.
+
+The sandbox reads the version from the first line of `<rootfs>/usr/local/go/VERSION` (for example `go1.26.0`), the file the official images ship. A linker older than 1.23 does not know the flag and would fail on it, so the flag is left out when the version is older, or when the file is missing, is not a regular file, or does not name a release (a development build). Leaving it out never fails a run: the build command is then the plain one. A build that still fails ends `INCONCLUSIVE` as before.
 
 ## Installing runsc
 
