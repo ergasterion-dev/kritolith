@@ -5,6 +5,8 @@
 // Each probe drives the driver directly with a minimal container, so a
 // failure names the one fact that does not hold on this host. The
 // "First run checklist" in docs/sandbox.md lists them.
+//
+// The file is Linux-only because it uses netnsDir.
 package sandbox
 
 import (

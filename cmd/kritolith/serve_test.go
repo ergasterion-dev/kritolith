@@ -347,10 +347,10 @@ func TestServeLeavesTheSandboxAlone(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := writeConfigFile(t, `{"projects":[{"repo":"a/b"}],"github":{"webhook_secret_env":"KRITOLITH_TEST_WEBHOOK_SECRET","token_env":"KRITOLITH_TEST_GH_TOKEN"}`+tt.sandbox+`}`)
 			var out, errOut bytes.Buffer
-			// The listen address is invalid, so serve gets through its
-			// whole startup and then stops.
-			code := run(context.Background(), []string{"serve", "--listen", "256.0.0.1:1", "--data-dir", filepath.Join(t.TempDir(), "data"), "--config", cfg}, &out, &errOut)
-			if code != 1 || !strings.Contains(errOut.String(), "serve:") {
+			// The port is out of range, so serve gets through its whole
+			// startup and then stops at the listen, with no name lookup.
+			code := run(context.Background(), []string{"serve", "--listen", "127.0.0.1:99999", "--data-dir", filepath.Join(t.TempDir(), "data"), "--config", cfg}, &out, &errOut)
+			if code != 1 || !strings.Contains(errOut.String(), "serve: listen") {
 				t.Fatalf("code = %d, stderr = %q; want the listen error", code, errOut.String())
 			}
 			if n := strings.Count(errOut.String(), note); n != tt.wantNote {

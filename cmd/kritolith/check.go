@@ -116,8 +116,17 @@ type output struct {
 // runReport sends one report through the pipeline and prints its
 // verdict. Every one-shot intake command ends here, so a report is
 // handled the same way however it arrived.
+//
+// r is complete when it gets here and no stage adds a PoC to it. A
+// report with no PoC can never reach the sandbox stage, so its
+// processor is built without the sandbox: no startup sweep, no work dir
+// lock, no log sink. Its verdict is the same either way.
 func runReport(ctx context.Context, r report.Report, cfg *config.Config, dir string, out output, stdout, stderr io.Writer) int {
-	pr, err := newProcessor(ctx, cfg, dir, stderr)
+	var opts []processorOption
+	if len(r.PoC) == 0 {
+		opts = append(opts, withoutSandbox())
+	}
+	pr, err := newProcessor(ctx, cfg, dir, stderr, opts...)
 	if err != nil {
 		return fail(stderr, err)
 	}

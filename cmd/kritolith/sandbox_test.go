@@ -420,17 +420,78 @@ func TestSandboxLogSinkRefuses(t *testing.T) {
 	})
 }
 
-// check with a sandbox section on a host where it cannot run: the
+// check --poc with a sandbox section on a host where it cannot run: the
 // command succeeds and says once that PoCs will not be run.
 func TestCheckSandboxUnavailableContinues(t *testing.T) {
 	cfg := writeConfigFile(t, `{"sandbox":{"rootfs":"`+filepath.Join(t.TempDir(), "no-rootfs")+`"}}`)
 	p := writeReport(t, "no ref report")
+	poc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(poc, "poc_test.go"), []byte("package vuln\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var out, errOut bytes.Buffer
-	code := run(context.Background(), []string{"check", "--repo", "a/b", "--config", cfg, "--data-dir", filepath.Join(t.TempDir(), "data"), p}, &out, &errOut)
+	code := run(context.Background(), []string{"check", "--repo", "a/b", "--config", cfg, "--data-dir", filepath.Join(t.TempDir(), "data"), "--poc", poc, p}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr: %s", code, errOut.String())
 	}
 	if strings.Count(errOut.String(), "kritolith: sandbox unavailable: ") != 1 || !strings.Contains(errOut.String(), "; PoCs will not be run") {
 		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+// A report with no PoC can never use the sandbox, so check and ingest
+// leave it alone for such a report: no sweep, no runner (so no work dir
+// lock), nothing extra on stderr, and the same verdict as before. A
+// report with a PoC gets the sandbox exactly as before.
+func TestRunReportBuildsTheSandboxOnlyForAPoC(t *testing.T) {
+	poc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(poc, "poc_test.go"), []byte("package vuln\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reportPath := writeReport(t, "no ref report")
+	const plainMessage = "From: someone@example.org\r\n" +
+		"Subject: Over-read in the parser\r\n" +
+		"Message-ID: <no-poc@example.org>\r\n" +
+		"Content-Type: text/plain\r\n\r\nThe function parser.readAll in parser.go overflows.\r\n"
+	tests := []struct {
+		name      string
+		args      []string
+		stdin     string
+		wantBuilt int // sweeps and runner constructions, each
+	}{
+		{"check without a PoC", []string{"check", reportPath}, "", 0},
+		{"check --poc", []string{"check", "--poc", poc, reportPath}, "", 1},
+		{"check --poc with an empty directory", []string{"check", "--poc", t.TempDir(), reportPath}, "", 0},
+		{"ingest without an attachment", []string{"ingest", "--eml"}, plainMessage, 0},
+		{"ingest with an attachment", []string{"ingest", "--eml"}, testMessage, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sweeps, builds int
+			fake := &fakeSandbox{}
+			stubSandbox(t,
+				func(string, string) error { sweeps++; return nil },
+				func(config.Sandbox, sandbox.SourceResolver, string, string) (sandboxRunner, error) {
+					builds++
+					return fake, nil
+				})
+			cfg := writeConfigFile(t, `{"sandbox":{"rootfs":"/srv/rootfs"}}`)
+			args := append([]string{tt.args[0], "--repo", "a/b", "--config", cfg, "--data-dir", filepath.Join(t.TempDir(), "data")}, tt.args[1:]...)
+			var out, errOut bytes.Buffer
+			code := runIO(context.Background(), args, strings.NewReader(tt.stdin), &out, &errOut)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr: %s", code, errOut.String())
+			}
+			if sweeps != tt.wantBuilt || builds != tt.wantBuilt || fake.closes != tt.wantBuilt {
+				t.Errorf("sweeps = %d, runners built = %d, closed = %d; want %d each", sweeps, builds, fake.closes, tt.wantBuilt)
+			}
+			// No ref was given, so the verdict is NEEDS_INFO either way.
+			if !strings.HasPrefix(out.String(), "Kritolith: NEEDS_INFO") {
+				t.Errorf("stdout = %q, want NEEDS_INFO", out.String())
+			}
+			if errOut.Len() != 0 {
+				t.Errorf("stderr = %q, want nothing", errOut.String())
+			}
+		})
 	}
 }

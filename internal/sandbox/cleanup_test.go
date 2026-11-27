@@ -347,7 +347,8 @@ func flattenChain(base, name string) error {
 // PATH_MAX (4096 bytes on Linux, 1024 on macOS) and take the write bit
 // from them. The removal must still delete the whole tree, through the
 // plain RemoveAll or through the fallback alone, whether the depth comes
-// from long names or from many levels.
+// from long names or from many levels. This covers path length, not the
+// Linux cap on levels (maxForceDepth).
 func TestRemoveAllForceDeepTree(t *testing.T) {
 	const pathMax = 4096
 	for _, tc := range []struct {

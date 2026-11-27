@@ -207,6 +207,42 @@ func TestSandboxLogPruneOtherOwner(t *testing.T) {
 	}
 }
 
+// prune stops at the logs directory when that is not the user's, so
+// the owner check on each report directory is reached only through
+// pruneReport: an old directory of another user under the user's own
+// logs directory stays.
+func TestSandboxLogPruneReportOtherOwner(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-24 * time.Hour)
+	tests := []struct {
+		name     string
+		uidDelta uint32
+		wantKept bool
+	}{
+		{"another user's directory", 1, true},
+		{"the user's own directory", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := t.TempDir()
+			d := mkLogDir(t, data, "OLD", now.Add(-48*time.Hour), "run.log")
+			p := newLogPruner(data, 1, func() time.Time { return now })
+			p.uid += tt.uidDelta
+			root, err := os.OpenRoot(filepath.Join(data, sandboxLogsDir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			if err := p.pruneReport(root, "OLD", cutoff); err != nil {
+				t.Fatalf("pruneReport: %v", err)
+			}
+			if kept := exists(d) && exists(filepath.Join(d, "run.log")); kept != tt.wantKept {
+				t.Fatalf("directory kept = %v, want %v", kept, tt.wantKept)
+			}
+		})
+	}
+}
+
 // The sink prunes when it is created and then at most once an hour.
 func TestSandboxLogPruneOncePerHour(t *testing.T) {
 	data := t.TempDir()

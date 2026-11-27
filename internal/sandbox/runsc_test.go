@@ -416,34 +416,36 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 		}
 	})
 
+	const overlap = "overlaps forbidden path"
 	refused := []struct {
-		name string
-		mod  func(*ContainerSpec)
+		name    string
+		wantErr string // a substring of the error; "" accepts any error
+		mod     func(*ContainerSpec)
 	}{
-		{"mount source linking into a forbidden dir", func(c *ContainerSpec) {
+		{"mount source linking into a forbidden dir", "", func(c *ContainerSpec) {
 			c.Mounts = append(c.Mounts, Mount{Source: keysLink, Dest: "/work"})
 			c.Forbidden = []string{data}
 		}},
-		{"rootfs linking into a forbidden dir", func(c *ContainerSpec) {
+		{"rootfs linking into a forbidden dir", "", func(c *ContainerSpec) {
 			c.Rootfs = keysLink
 			c.Forbidden = []string{data}
 		}},
-		{"forbidden prefix given through a link", func(c *ContainerSpec) {
+		{"forbidden prefix given through a link", "", func(c *ContainerSpec) {
 			c.Mounts = append(c.Mounts, Mount{Source: filepath.Join(data, "keys"), Dest: "/work"})
 			c.Forbidden = []string{link(data, "data-link")}
 		}},
 		// The data dir as the operator writes it may be a symlink
 		// (data_dir -> a bigger disk). The caller passes it as written;
 		// the driver resolves it, so the real directory is refused too.
-		{"data dir given through a link, mount source is the real dir", func(c *ContainerSpec) {
+		{"data dir given through a link, mount source is the real dir", overlap, func(c *ContainerSpec) {
 			c.Mounts = append(c.Mounts, Mount{Source: data, Dest: "/work"})
 			c.Forbidden = []string{link(data, "data-link-exact")}
 		}},
-		{"data dir given through a link, rootfs inside the real dir", func(c *ContainerSpec) {
+		{"data dir given through a link, rootfs inside the real dir", overlap, func(c *ContainerSpec) {
 			c.Rootfs = filepath.Join(data, "keys")
 			c.Forbidden = []string{link(data, "data-link-rootfs")}
 		}},
-		{"data dir given through a link, mount source contains the real dir", func(c *ContainerSpec) {
+		{"data dir given through a link, mount source contains the real dir", overlap, func(c *ContainerSpec) {
 			outer := filepath.Join(base, "outer")
 			if err := os.MkdirAll(filepath.Join(outer, "data"), 0o700); err != nil {
 				t.Fatal(err)
@@ -451,7 +453,7 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 			c.Mounts = append(c.Mounts, Mount{Source: outer, Dest: "/work"})
 			c.Forbidden = []string{link(filepath.Join(outer, "data"), "data-link-outer")}
 		}},
-		{"data dir below a linked parent, not created yet", func(c *ContainerSpec) {
+		{"data dir below a linked parent, not created yet", overlap, func(c *ContainerSpec) {
 			parent := filepath.Join(base, "disk")
 			if err := os.MkdirAll(filepath.Join(parent, "later"), 0o700); err != nil {
 				t.Fatal(err)
@@ -460,7 +462,7 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 			c.Mounts = append(c.Mounts, Mount{Source: filepath.Join(parent, "later"), Dest: "/work"})
 			c.Forbidden = []string{filepath.Join(link(parent, "disk-link"), "later", "db")}
 		}},
-		{"missing mount source", func(c *ContainerSpec) {
+		{"missing mount source", "", func(c *ContainerSpec) {
 			c.Mounts = append(c.Mounts, Mount{Source: filepath.Join(base, "nope"), Dest: "/work"})
 		}},
 	}
@@ -474,8 +476,12 @@ func TestRunscDriverResolvesSymlinks(t *testing.T) {
 			}
 			s := testSpec(t)
 			tt.mod(&s.Container)
-			if _, err := d.Run(context.Background(), s); err == nil {
+			_, err = d.Run(context.Background(), s)
+			if err == nil {
 				t.Fatal("Run accepted the spec")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Run: %v; want an error containing %q", err, tt.wantErr)
 			}
 			if c := f.calls(t); len(c) != 0 {
 				t.Fatalf("runsc invoked for a refused spec: %q", c)

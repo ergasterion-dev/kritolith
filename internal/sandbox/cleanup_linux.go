@@ -17,7 +17,10 @@ const (
 	oPath = 0x200000
 	// atRemoveDir is AT_REMOVEDIR for unlinkat.
 	atRemoveDir = 0x200
-	// maxForceDepth bounds the walk (each level holds one fd).
+	// maxForceDepth bounds the walk. Each level holds two fds while its
+	// children are removed: the pinned O_PATH fd and the fd the
+	// directory is read through. A tree with more levels is left behind
+	// below the cap, with an error.
 	maxForceDepth = 512
 )
 
