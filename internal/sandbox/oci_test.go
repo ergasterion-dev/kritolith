@@ -168,6 +168,77 @@ func TestBuildOCIPrefixBoundary(t *testing.T) {
 	}
 }
 
+// /boot and /var/lib/docker are never mounted, as a bind source or as
+// the rootfs, and neither is a directory that contains one of them.
+func TestBuildOCIDeniesBootAndDockerData(t *testing.T) {
+	for _, p := range []string{
+		"/boot", "/boot/vmlinuz", "/boot/efi/EFI",
+		"/var/lib/docker", "/var/lib/docker/volumes/x/_data", "/var/lib/docker/overlay2",
+		"/var/lib", // contains /var/lib/docker
+		"/var",
+	} {
+		for _, tt := range []struct {
+			name string
+			mod  func(*ContainerSpec)
+		}{
+			{"bind source", func(s *ContainerSpec) { s.Mounts[0].Source = p }},
+			{"writable bind source", func(s *ContainerSpec) { s.Mounts[0].Source, s.Mounts[0].Writable = p, true }},
+			{"rootfs", func(s *ContainerSpec) { s.Rootfs = p }},
+		} {
+			t.Run(tt.name+" "+p, func(t *testing.T) {
+				s := goodSpec()
+				tt.mod(&s)
+				_, err := BuildOCI(s)
+				if err == nil {
+					t.Fatalf("%s %s accepted", tt.name, p)
+				}
+				if !strings.Contains(err.Error(), "overlaps forbidden path") {
+					t.Fatalf("%s %s refused for another reason: %v", tt.name, p, err)
+				}
+			})
+		}
+	}
+}
+
+// The deny list refuses ancestors of its entries, so every entry also
+// closes its parents. These are layouts that must keep working: the
+// documented rootfs, work dir and data dir under /var/lib (siblings of
+// /var/lib/docker), names that only share a prefix with an entry, and
+// /root and /home, which are deliberately not denied.
+func TestBuildOCIDenyListKeepsCommonLayouts(t *testing.T) {
+	sources := []string{
+		"/var/lib/kritolith-rootfs/go1.27.4",
+		"/var/lib/kritolith-sandbox",
+		"/var/lib/kritolith-sandbox/kritolith-run-1/src",
+		"/var/lib/kd-sandbox",
+		"/var/lib/kd-sandbox/kritolith-run-1/src",
+		"/var/lib/kritolith",
+		"/var/lib/docker-rootfs",
+		"/bootstrap/rootfs",
+		"/root/kritolith/rootfs",
+		"/home/kritolith/sandbox",
+	}
+	for _, p := range sources {
+		t.Run("source "+p, func(t *testing.T) {
+			if err := checkSource(p, nil); err != nil {
+				t.Fatalf("checkSource(%q) = %v", p, err)
+			}
+		})
+	}
+	for _, workDir := range []string{"/var/lib/kritolith-sandbox", "/var/lib/kd-sandbox"} {
+		t.Run("layout "+workDir, func(t *testing.T) {
+			s := goodSpec()
+			s.Rootfs = "/var/lib/kritolith-rootfs/go1.27.4"
+			s.Forbidden = []string{"/var/lib/kritolith"}
+			s.Mounts[0] = Mount{Source: workDir + "/kritolith-run-1/src", Dest: "/work", Writable: true}
+			s.Mounts = append(s.Mounts, Mount{Source: workDir + "/kritolith-run-1/modcache", Dest: "/modcache"})
+			if _, err := BuildOCI(s); err != nil {
+				t.Fatalf("the documented layout is refused: %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildOCIAllowedEdges(t *testing.T) {
 	cases := map[string]func(*ContainerSpec){
 		"etcetera sibling": func(s *ContainerSpec) { s.Mounts[0].Source = "/etcetera" },

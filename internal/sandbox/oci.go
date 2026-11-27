@@ -48,7 +48,14 @@ type ContainerSpec struct {
 }
 
 // builtinDeny are host paths that may never be mounted into a container.
-var builtinDeny = []string{"/var/run", "/run", "/proc", "/sys", "/dev", "/etc"}
+// checkSource also refuses every ancestor of an entry, so /var/lib/docker
+// closes /var/lib as a mount source; its siblings (/var/lib/kritolith,
+// /var/lib/kritolith-sandbox) stay usable.
+//
+// /root and /home are left out on purpose: a work dir or rootfs may
+// live there, and refusing it would make the sandbox unavailable for a
+// working setup. The data dir and key files are covered by Forbidden.
+var builtinDeny = []string{"/var/run", "/run", "/proc", "/sys", "/dev", "/etc", "/boot", "/var/lib/docker"}
 
 // destDeny are in-container paths the runtime provides itself.
 var destDeny = []string{"/proc", "/sys", "/dev"}
