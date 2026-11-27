@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/ground"
@@ -184,11 +186,19 @@ func logPhaseName(key string) string {
 // content is the runner's capped, hostile output; it is kept for the
 // operator and never printed. Failures are logged without content and
 // never stop the verdict.
-func newSandboxLogSink(dataDir string) pipeline.SandboxLogSink {
+//
+// With retentionDays above 0 it also removes report log directories
+// older than that many days (see logPruner): once now, and after a
+// write when an hour has passed since the last pruning. 0 keeps every
+// log. now is the clock, time.Now outside tests.
+func newSandboxLogSink(dataDir string, retentionDays int, now func() time.Time) pipeline.SandboxLogSink {
+	pruner := newLogPruner(dataDir, retentionDays, now)
+	pruner.pruneIfDue()
 	return func(reportID string, logs map[string][]byte) {
 		if err := writeSandboxLogs(dataDir, reportID, logs); err != nil {
 			slog.Default().Warn("sandbox logs not fully kept", "report_id", reportID, "error", err)
 		}
+		pruner.pruneIfDue()
 	}
 }
 
@@ -252,4 +262,173 @@ func writeNewFile(p string, content []byte) error {
 		return fmt.Errorf("sandbox logs: %w", err)
 	}
 	return nil
+}
+
+// logPruneInterval is the shortest time between two prunings from one
+// sink.
+const logPruneInterval = time.Hour
+
+// logPruner removes the sandbox log directories of reports whose logs
+// are older than maxAge. It works only inside <data dir>/sandbox-logs,
+// through an os.Root, so no name or symlink can take it anywhere else
+// in the data dir (which holds the database and the signing key).
+type logPruner struct {
+	root   string // <data dir>/sandbox-logs
+	maxAge time.Duration
+	now    func() time.Time
+	uid    uint32 // only directories owned by this user are removed
+
+	mu   sync.Mutex
+	last time.Time // when prune last ran; zero before the first run
+}
+
+// newLogPruner returns a pruner for the logs under dataDir, or nil when
+// retentionDays is not above 0: no bound, nothing is ever removed.
+func newLogPruner(dataDir string, retentionDays int, now func() time.Time) *logPruner {
+	if retentionDays <= 0 {
+		return nil
+	}
+	return &logPruner{
+		root:   filepath.Join(dataDir, sandboxLogsDir),
+		maxAge: time.Duration(retentionDays) * 24 * time.Hour,
+		now:    now,
+		uid:    uint32(os.Geteuid()),
+	}
+}
+
+// pruneIfDue prunes on its first call and then when logPruneInterval
+// has passed since the last pruning. A nil pruner does nothing.
+func (p *logPruner) pruneIfDue() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	if !p.last.IsZero() && now.Sub(p.last) < logPruneInterval {
+		return
+	}
+	p.last = now
+	p.prune()
+}
+
+// prune removes every report log directory whose newest modification
+// time is more than maxAge ago. A candidate is an entry directly under
+// sandbox-logs whose name is a report id and that is a real directory
+// (not a symlink) owned by uid; every other entry is left as it is.
+// Failures are logged, without any log content, and pruning goes on
+// with the next directory.
+func (p *logPruner) prune() {
+	cutoff := p.now().Add(-p.maxAge)
+	lfi, err := os.Lstat(p.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return // no logs kept yet
+	}
+	if err != nil {
+		slog.Default().Warn("sandbox logs: pruning skipped", "error", err)
+		return
+	}
+	if !lfi.IsDir() || !ownedBy(lfi, p.uid) {
+		slog.Default().Warn("sandbox logs: pruning skipped: the logs directory is not a directory owned by this user")
+		return
+	}
+	root, err := os.OpenRoot(p.root)
+	if err != nil {
+		slog.Default().Warn("sandbox logs: pruning skipped", "error", err)
+		return
+	}
+	defer root.Close()
+	// OpenRoot follows a symlink in its last element: make sure it
+	// opened the directory that Lstat saw.
+	names, err := readRootDir(root, lfi)
+	if err != nil {
+		slog.Default().Warn("sandbox logs: pruning skipped", "error", err)
+		return
+	}
+	for _, name := range names {
+		if !logReportIDRe.MatchString(name) {
+			continue
+		}
+		if err := p.pruneReport(root, name, cutoff); err != nil {
+			slog.Default().Warn("sandbox logs: report logs not pruned", "report_id", name, "error", err)
+		}
+	}
+}
+
+// pruneReport removes the directory name under root, with the files in
+// it, if nothing in it was modified after cutoff. It returns nil for an
+// entry that is not a candidate or is still fresh. A directory that
+// holds anything but regular files is left whole, with an error.
+func (p *logPruner) pruneReport(root *os.Root, name string, cutoff time.Time) error {
+	lfi, err := root.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if !lfi.IsDir() || !ownedBy(lfi, p.uid) {
+		return nil // a symlink, a file, or someone else's: not ours to remove
+	}
+	dir, err := root.OpenRoot(name)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	files, err := readRootDir(dir, lfi)
+	if err != nil {
+		return err
+	}
+	newest := lfi.ModTime()
+	for _, f := range files {
+		fi, err := dir.Lstat(f)
+		if err != nil {
+			return err
+		}
+		if !fi.Mode().IsRegular() {
+			return errors.New("skipped: the directory holds something that is not a regular file")
+		}
+		if fi.ModTime().After(newest) {
+			newest = fi.ModTime()
+		}
+	}
+	if !newest.Before(cutoff) {
+		return nil
+	}
+	// Root.Remove never follows a symlink and never leaves the root. It
+	// removes a file or an empty directory, so anything that appeared
+	// since the listing makes the last Remove fail and stays.
+	var errs []error
+	for _, f := range files {
+		if err := dir.Remove(f); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return root.Remove(name)
+}
+
+// readRootDir returns the names directly inside the directory r was
+// opened on, after checking that it is the directory want describes (an
+// Lstat result): the name could have been swapped for a symlink or
+// another directory between the Lstat and the open.
+func readRootDir(r *os.Root, want os.FileInfo) ([]string, error) {
+	d, err := r.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	fi, err := d.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(want, fi) {
+		return nil, errors.New("sandbox logs: the directory changed while it was being opened")
+	}
+	return d.Readdirnames(-1)
+}
+
+// ownedBy reports whether fi's file belongs to uid.
+func ownedBy(fi os.FileInfo, uid uint32) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uid
 }

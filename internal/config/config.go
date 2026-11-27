@@ -68,7 +68,16 @@ type Sandbox struct {
 	// a container) where cgroups cannot be configured; never in
 	// production. Kritolith warns loudly at startup when it is set.
 	IgnoreCgroups bool `json:"ignore_cgroups,omitempty"`
+	// LogRetentionDays bounds how long a report's kept sandbox logs
+	// stay under <data_dir>/sandbox-logs/. 0, the default, keeps them
+	// forever: the signed verdict carries each log's SHA-256, so
+	// removing logs removes evidence and is the operator's choice.
+	LogRetentionDays int `json:"log_retention_days,omitempty"`
 }
+
+// MaxLogRetentionDays is the largest sandbox.log_retention_days: 100
+// years, far below what a time.Duration can hold.
+const MaxLogRetentionDays = 36500
 
 // Enabled reports whether a rootfs is configured.
 func (s Sandbox) Enabled() bool { return s.Rootfs != "" }
@@ -111,6 +120,12 @@ func (s Sandbox) Validate() error {
 		if f.v < 0 {
 			return fmt.Errorf("sandbox.%s must not be negative", f.name)
 		}
+	}
+	if s.LogRetentionDays < 0 {
+		return fmt.Errorf("sandbox.log_retention_days must not be negative")
+	}
+	if s.LogRetentionDays > MaxLogRetentionDays {
+		return fmt.Errorf("sandbox.log_retention_days must be at most %d", MaxLogRetentionDays)
 	}
 	if s.Rootfs != "" && !filepath.IsAbs(s.Rootfs) {
 		return fmt.Errorf("sandbox.rootfs %q must be an absolute path", s.Rootfs)

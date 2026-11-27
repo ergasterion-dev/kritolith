@@ -93,6 +93,30 @@ func TestSandboxDefaults(t *testing.T) {
 	}
 }
 
+// log_retention_days has no default: 0 keeps the logs forever.
+func TestSandboxLogRetentionDays(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       int
+	}{
+		{"unset keeps forever", `{"sandbox":{"rootfs":"/x"}}`, 0},
+		{"zero keeps forever", `{"sandbox":{"log_retention_days":0}}`, 0},
+		{"one day", `{"sandbox":{"log_retention_days":1}}`, 1},
+		{"the maximum", `{"sandbox":{"log_retention_days":36500}}`, 36500},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Load(writeConfig(t, tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.Sandbox.WithDefaults().LogRetentionDays; got != tt.want {
+				t.Fatalf("LogRetentionDays = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSandboxDisabledWhenEmpty(t *testing.T) {
 	for _, body := range []string{`{}`, `{"sandbox":{}}`} {
 		c, err := Load(writeConfig(t, body))
@@ -115,6 +139,8 @@ func TestSandboxRejects(t *testing.T) {
 		{"negative build", `{"sandbox":{"build_timeout_seconds":-1}}`, "build_timeout_seconds"},
 		{"negative run", `{"sandbox":{"run_timeout_seconds":-1}}`, "run_timeout_seconds"},
 		{"negative output", `{"sandbox":{"output_limit_kb":-1}}`, "output_limit_kb"},
+		{"negative log retention", `{"sandbox":{"log_retention_days":-1}}`, "log_retention_days"},
+		{"log retention above the maximum", `{"sandbox":{"log_retention_days":36501}}`, "log_retention_days"},
 		{"relative rootfs", `{"sandbox":{"rootfs":"rootfs"}}`, "rootfs"},
 		{"http remote proxy", `{"sandbox":{"goproxy":"http://example.org"}}`, "goproxy"},
 		{"ftp proxy", `{"sandbox":{"goproxy":"ftp://example.org"}}`, "goproxy"},

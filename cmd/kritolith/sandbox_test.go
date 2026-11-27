@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/sandbox"
@@ -328,7 +329,7 @@ func TestNewProcessorRefusesWorkDirInDataDir(t *testing.T) {
 
 func TestSandboxLogSink(t *testing.T) {
 	data := t.TempDir()
-	sink := newSandboxLogSink(data)
+	sink := newSandboxLogSink(data, 0, time.Now)
 	sink("01JREPORT", map[string][]byte{
 		"run":           []byte("hostile output"),
 		"control/build": []byte("build log"),

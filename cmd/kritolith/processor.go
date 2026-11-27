@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/dedupe"
@@ -100,7 +101,7 @@ func newProcessor(ctx context.Context, cfg *config.Config, dir string, stderr io
 		}
 		if sb != nil {
 			pr.sandbox = sb
-			p = p.WithSandbox(sb).WithSandboxLogs(newSandboxLogSink(dir))
+			p = p.WithSandbox(sb).WithSandboxLogs(newSandboxLogSink(dir, cfg.Sandbox.LogRetentionDays, time.Now))
 		}
 	}
 	pr.pipeline = p
