@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -276,7 +277,25 @@ func checkPrivateDir(p string) error {
 	return nil
 }
 
-// lockWorkDir takes an exclusive, non-blocking flock on workDir/.lock.
+// WorkDirInUse says that another live driver or sweep, in this or
+// another process, holds the lock of WorkDir. PID is the process that
+// wrote itself into the lock file, or 0 when that could not be read.
+type WorkDirInUse struct {
+	WorkDir string
+	PID     int
+}
+
+func (e *WorkDirInUse) Error() string {
+	s := "sandbox: work dir " + e.WorkDir + " is in use by another kritolith sandbox driver"
+	if e.PID > 0 {
+		s += " (pid " + strconv.Itoa(e.PID) + ")"
+	}
+	return s
+}
+
+// lockWorkDir takes an exclusive, non-blocking flock on workDir/.lock
+// and writes this process's pid into the file, so that whoever finds
+// the lock held can name the holder. A held lock is a *WorkDirInUse.
 func lockWorkDir(workDir string) (*os.File, error) {
 	p := filepath.Join(workDir, lockFile)
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
@@ -284,16 +303,37 @@ func lockWorkDir(workDir string) (*os.File, error) {
 		return nil, fmt.Errorf("sandbox: open %s: %w", p, err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("sandbox: work dir %s is in use by another kritolith sandbox driver", workDir)
+			pid := lockHolderPID(f)
+			f.Close()
+			return nil, &WorkDirInUse{WorkDir: workDir, PID: pid}
 		}
+		f.Close()
 		return nil, fmt.Errorf("sandbox: lock %s: %w", p, err)
+	}
+	// The pid is only for the message of a process that finds the lock
+	// held; the flock is the lock. A failed write leaves it unknown.
+	if err := f.Truncate(0); err == nil {
+		_, _ = f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0)
 	}
 	return f, nil
 }
 
+// lockHolderPID reads the pid a lock holder wrote into the lock file,
+// or returns 0 when the file holds anything else.
+func lockHolderPID(f *os.File) int {
+	var b [16]byte
+	n, _ := f.ReadAt(b[:], 0)
+	pid, err := strconv.Atoi(strings.TrimSuffix(string(b[:n]), "\n"))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
+}
+
 func unlockWorkDir(f *os.File) {
+	// Empty first, so the file never names a process that is gone.
+	_ = f.Truncate(0)
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	f.Close()
 }
@@ -673,7 +713,8 @@ func evalBestEffort(p string) string {
 //
 // Call it once at startup, before creating the driver for workDir: it
 // takes the work dir lock itself and refuses to run while a live driver
-// (in this or another process) holds it, and it refuses a work dir that
+// (in this or another process) holds it (the error then wraps a
+// *WorkDirInUse), and it refuses a work dir that
 // is a symlink, foreign-owned or group/world writable, or has an unsafe
 // ancestor. It removes nothing (and says so) in a non-empty work dir
 // without the work dir marker. Past that, it keeps going through

@@ -56,9 +56,14 @@ func buildSandbox(cfg config.Sandbox, gs *ground.Service, dataDir string, stderr
 	}
 	// A missing work dir is nothing to sweep (SweepOrphans returns nil);
 	// anything else is reported and the startup goes on, as the sweep's
-	// contract asks.
-	if err := sweepSandboxOrphans(cfg.WithDefaults().Runtime, workDir); err != nil {
-		fmt.Fprintf(stderr, "kritolith: sandbox: removing leftovers of an earlier run failed: %v\n", err)
+	// contract asks. A held work dir lock stops the sweep and then the
+	// constructor for the same cause, so the sweep's report waits until
+	// the constructor has spoken.
+	sweepErr := sweepSandboxOrphans(cfg.WithDefaults().Runtime, workDir)
+	var inUse *sandbox.WorkDirInUse
+	sweepLockHeld := errors.As(sweepErr, &inUse)
+	if sweepErr != nil && !sweepLockHeld {
+		reportSweepFailure(stderr, sweepErr)
 	}
 	resolve := func(repo string) (sandbox.Source, error) {
 		m, err := gs.Mirror(repo)
@@ -68,6 +73,20 @@ func buildSandbox(cfg config.Sandbox, gs *ground.Service, dataDir string, stderr
 		return m, nil
 	}
 	r, err := newSandboxRunner(cfg, resolve, workDir, dataDir)
+	if errors.As(err, &inUse) {
+		// One line for the one cause, whether or not the sweep hit it too.
+		holder := "another Kritolith process"
+		if inUse.PID > 0 {
+			holder += fmt.Sprintf(" (pid %d)", inUse.PID)
+		}
+		fmt.Fprintf(stderr, "kritolith: sandbox unavailable: the work dir %s is in use by %s; PoCs will not be run\n", inUse.WorkDir, holder)
+		return nil, nil
+	}
+	// The lock was free again for the constructor, or the constructor
+	// failed for another reason: the skipped sweep is still worth a line.
+	if sweepLockHeld {
+		reportSweepFailure(stderr, sweepErr)
+	}
 	var u *sandbox.Unavailable
 	switch {
 	case errors.As(err, &u):
@@ -77,6 +96,10 @@ func buildSandbox(cfg config.Sandbox, gs *ground.Service, dataDir string, stderr
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
 	return r, nil
+}
+
+func reportSweepFailure(stderr io.Writer, err error) {
+	fmt.Fprintf(stderr, "kritolith: sandbox: removing leftovers of an earlier run failed: %v\n", err)
 }
 
 // sandboxWorkDir returns the sandbox work dir: sandbox.work_dir, or a

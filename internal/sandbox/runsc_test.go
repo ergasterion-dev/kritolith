@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ergasterion-dev/kritolith/internal/config"
 )
 
 // fakeRunsc writes a shell script standing in for runsc. Every call
@@ -838,6 +840,96 @@ func TestRunscDriverLocksWorkDir(t *testing.T) {
 		t.Fatalf("work dir not released by Close: %v", err)
 	}
 	d3.Close()
+}
+
+// A held work dir lock is reported as a *WorkDirInUse by everything
+// that takes the lock, with the work dir and the holder's pid, and
+// nothing is removed while it is held.
+func TestWorkDirInUseIsTyped(t *testing.T) {
+	f := newFakeRunsc(t, `:`, ``)
+	workDir := realTempDir(t)
+	holder, err := newRunscDriver(f.path, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	leftover := filepath.Join(workDir, orphanPrefix+"run-1")
+	if err := os.Mkdir(leftover, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(leftover, old, old); err != nil {
+		t.Fatal(err)
+	}
+	oldOS := hostOS
+	hostOS = "linux"
+	defer func() { hostOS = oldOS }()
+	cfg := config.Sandbox{Rootfs: realTempDir(t), Runtime: f.path}
+
+	tests := []struct {
+		name        string
+		take        func() error
+		unavailable bool
+	}{
+		{"lock", func() error {
+			l, err := lockWorkDir(workDir)
+			if err == nil {
+				unlockWorkDir(l)
+			}
+			return err
+		}, false},
+		{"sweep", func() error { return sweepOrphans(f.path, workDir, time.Now()) }, false},
+		{"driver", func() error {
+			d, err := newRunscDriver(f.path, workDir)
+			if err == nil {
+				d.Close()
+			}
+			return err
+		}, false},
+		{"runner", func() error {
+			r, err := New(cfg, &fakeSource{}, workDir, false)
+			if err == nil {
+				r.Close()
+			}
+			return err
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.take()
+			var inUse *WorkDirInUse
+			if !errors.As(err, &inUse) {
+				t.Fatalf("err = %v, want a *WorkDirInUse", err)
+			}
+			if inUse.WorkDir != workDir || inUse.PID != os.Getpid() {
+				t.Errorf("WorkDirInUse = %+v, want work dir %s and pid %d", inUse, workDir, os.Getpid())
+			}
+			var u *Unavailable
+			if got := errors.As(err, &u); got != tt.unavailable {
+				t.Errorf("is an *Unavailable = %v, want %v (%v)", got, tt.unavailable, err)
+			}
+			if _, err := os.Lstat(leftover); err != nil {
+				t.Errorf("a leftover was removed while the lock was held: %v", err)
+			}
+		})
+	}
+
+	// Once the holder is gone the lock file names nobody.
+	if err := holder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(workDir, lockFile)); err != nil || len(b) != 0 {
+		t.Errorf("lock file after Close = %q, %v; want it empty", b, err)
+	}
+	// Anything but a pid in the lock file is "unknown", never an error.
+	m, err := os.Open(filepath.Join(workDir, workDirMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if got := lockHolderPID(m); got != 0 {
+		t.Errorf("lockHolderPID of a file without a pid = %d, want 0", got)
+	}
 }
 
 func TestRunscDriverCleanupFailure(t *testing.T) {

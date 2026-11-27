@@ -65,10 +65,17 @@ type Result struct {
 }
 
 // Unavailable says why the sandbox cannot run on this host or with
-// this configuration. It is never a judgement on a report.
-type Unavailable struct{ Reason string }
+// this configuration. It is never a judgement on a report. Err, when
+// set, is the cause behind Reason (a *WorkDirInUse for a held work dir
+// lock), for errors.As.
+type Unavailable struct {
+	Reason string
+	Err    error
+}
 
 func (e *Unavailable) Error() string { return "sandbox unavailable: " + e.Reason }
+
+func (e *Unavailable) Unwrap() error { return e.Err }
 
 // hostOS is runtime.GOOS; tests replace it.
 var hostOS = runtime.GOOS
@@ -195,7 +202,7 @@ func newProduction(cfg config.Sandbox, src Source, resolve SourceResolver, workD
 	}
 	d, err := newRunscDriver(cfg.Runtime, workDir)
 	if err != nil {
-		return nil, &Unavailable{Reason: err.Error()}
+		return nil, &Unavailable{Reason: err.Error(), Err: err}
 	}
 	d.ignoreCgroups = ignoreCgroups
 	r := NewRunner(cfg, src, d, d.workDir)

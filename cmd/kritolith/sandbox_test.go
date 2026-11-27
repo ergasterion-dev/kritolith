@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,65 @@ func TestNewProcessorSandboxErrors(t *testing.T) {
 			defer pr.close()
 			if pr.sandbox != nil || errOut.String() != tt.wantLine {
 				t.Fatalf("sandbox = %v, stderr = %q", pr.sandbox, errOut.String())
+			}
+		})
+	}
+}
+
+// When another process holds the work dir lock, the sweep and the
+// constructor both fail for that one cause: stderr gets one line, and
+// the command goes on without the sandbox.
+func TestNewProcessorWorkDirInUse(t *testing.T) {
+	const work = "/srv/kritolith-sandbox"
+	inUse := func() error { return &sandbox.WorkDirInUse{WorkDir: work, PID: 4242} }
+	sweepInUse := func() error { return fmt.Errorf("sandbox: sweep: %w", inUse()) }
+	newInUse := func() error { e := inUse(); return &sandbox.Unavailable{Reason: e.Error(), Err: e} }
+	const (
+		inUseLine = "kritolith: sandbox unavailable: the work dir " + work + " is in use by another Kritolith process (pid 4242); PoCs will not be run\n"
+		sweepLine = "kritolith: sandbox: removing leftovers of an earlier run failed: "
+	)
+	tests := []struct {
+		name        string
+		sweepErr    error
+		newErr      error
+		wantSandbox bool
+		wantStderr  string
+	}{
+		{"held for the sweep and the runner", sweepInUse(), newInUse(), false, inUseLine},
+		{"held without a known pid", sweepInUse(), &sandbox.Unavailable{Reason: "x", Err: &sandbox.WorkDirInUse{WorkDir: work}}, false,
+			"kritolith: sandbox unavailable: the work dir " + work + " is in use by another Kritolith process; PoCs will not be run\n"},
+		{"held for the runner only", nil, newInUse(), false, inUseLine},
+		{"held for the sweep only", sweepInUse(), nil, true,
+			sweepLine + "sandbox: sweep: sandbox: work dir " + work + " is in use by another kritolith sandbox driver (pid 4242)\n"},
+		{"another sweep failure, then held", errors.New("leftover container would not die"), newInUse(), false,
+			sweepLine + "leftover container would not die\n" + inUseLine},
+		{"another sweep failure", errors.New("leftover container would not die"), nil, true,
+			sweepLine + "leftover container would not die\n"},
+		{"held for the sweep, unavailable for another reason", sweepInUse(), &sandbox.Unavailable{Reason: "gVisor needs a Linux host"}, false,
+			sweepLine + "sandbox: sweep: sandbox: work dir " + work + " is in use by another kritolith sandbox driver (pid 4242)\n" +
+				"kritolith: sandbox unavailable: gVisor needs a Linux host; PoCs will not be run\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeSandbox{}
+			stubSandbox(t, func(string, string) error { return tt.sweepErr },
+				func(config.Sandbox, sandbox.SourceResolver, string, string) (sandboxRunner, error) {
+					if tt.newErr != nil {
+						return nil, tt.newErr
+					}
+					return fake, nil
+				})
+			var errOut bytes.Buffer
+			pr, err := newProcessor(context.Background(), sandboxCfg("/srv/rootfs"), filepath.Join(t.TempDir(), "data"), &errOut)
+			if err != nil {
+				t.Fatalf("a held work dir lock must never stop the command: %v", err)
+			}
+			defer pr.close()
+			if (pr.sandbox != nil) != tt.wantSandbox {
+				t.Errorf("sandbox = %v, want one: %v", pr.sandbox, tt.wantSandbox)
+			}
+			if errOut.String() != tt.wantStderr {
+				t.Errorf("stderr =\n%swant\n%s", errOut.String(), tt.wantStderr)
 			}
 		})
 	}
