@@ -422,7 +422,7 @@ func leftovers(workDir string) []string {
 		out = append(out, err.Error())
 	}
 	for _, mp := range mps {
-		if mp != filepath.Join(state, nullNetnsName) {
+		if mp != keptMount(state) {
 			out = append(out, "mount "+mp)
 		}
 	}

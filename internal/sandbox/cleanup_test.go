@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -251,4 +252,140 @@ func TestRemoveAllForceFallback(t *testing.T) {
 		t.Fatalf("root still there: %v", err)
 	}
 	assertOutsideUntouched(t, outside)
+}
+
+// deepChain builds a single chain of nested directories under base,
+// levels deep, each named name, and returns the top of the chain. Every
+// step is relative to a directory handle, so the full path may be longer
+// than PATH_MAX. Each directory holds a 0400 file; every third one, and
+// the last, ends up 0500, and every seventh 0000.
+func deepChain(t *testing.T, base, name string, levels int) string {
+	t.Helper()
+	parent, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { parent.Close() }()
+	for i := 1; i <= levels; i++ {
+		if err := parent.Mkdir(name, 0o700); err != nil {
+			t.Fatalf("level %d: %v", i, err)
+		}
+		cur, err := parent.OpenRoot(name)
+		if err != nil {
+			t.Fatalf("level %d: %v", i, err)
+		}
+		if err := cur.WriteFile("f", []byte("x"), 0o400); err != nil {
+			t.Fatalf("level %d: %v", i, err)
+		}
+		// The directory above cur is complete now: lock it.
+		if lvl := i - 1; lvl > 0 {
+			lockChainDir(t, parent, lvl)
+		}
+		parent.Close()
+		parent = cur
+	}
+	// parent is the last directory; lock it through its own handle.
+	if err := parent.Chmod(".", 0o500); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(base, name)
+}
+
+// lockChainDir takes write permission from the directory r is open on,
+// by its level in the chain.
+func lockChainDir(t *testing.T, r *os.Root, lvl int) {
+	t.Helper()
+	var mode os.FileMode
+	switch {
+	case lvl%7 == 0:
+		mode = 0o000
+	case lvl%3 == 0:
+		mode = 0o500
+	default:
+		return
+	}
+	if err := r.Chmod(".", mode); err != nil {
+		t.Fatalf("level %d: %v", lvl, err)
+	}
+}
+
+// flattenChain is the cleanup for a chain the removal under test left
+// behind: t.TempDir's own RemoveAll cannot be relied on for a tree of
+// this depth with locked directories. It moves every directory of the
+// chain up into base, one at a time and by short relative paths, so one
+// handle is enough at any depth, and leaves them all u+rwx.
+func flattenChain(base, name string) error {
+	r, err := os.OpenRoot(base)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	cur := name
+	for i := 0; ; i++ {
+		if err := r.Chmod(cur, 0o700); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		child := cur + "/" + name
+		if err := r.Chmod(child, 0o700); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		next := "flat-" + strconv.Itoa(i)
+		if err := r.Rename(child, next); err != nil {
+			return err
+		}
+		cur = next
+	}
+}
+
+// A hostile PoC can nest directories until the path is longer than
+// PATH_MAX (4096 bytes on Linux, 1024 on macOS) and take the write bit
+// from them. The removal must still delete the whole tree, through the
+// plain RemoveAll or through the fallback alone, whether the depth comes
+// from long names or from many levels.
+func TestRemoveAllForceDeepTree(t *testing.T) {
+	const pathMax = 4096
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		levels   int
+		fallback bool // make the plain RemoveAll fail first
+	}{
+		{"long names", strings.Repeat("n", 200), 30, false},
+		{"long names, fallback only", strings.Repeat("n", 200), 30, true},
+		{"many levels", strings.Repeat("m", 50), 100, false},
+		{"many levels, fallback only", strings.Repeat("m", 50), 100, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if n := tc.levels * (len(tc.dir) + 1); n <= pathMax {
+				t.Fatalf("chain is %d bytes of path, want more than %d", n, pathMax)
+			}
+			base := realTempDir(t)
+			t.Cleanup(func() {
+				if err := flattenChain(base, tc.dir); err != nil {
+					t.Logf("cleanup of the deep tree: %v", err)
+				}
+			})
+			root := deepChain(t, base, tc.dir, tc.levels)
+			if tc.fallback {
+				old := fastRemoveAll
+				t.Cleanup(func() { fastRemoveAll = old })
+				fastRemoveAll = func(string) error { return errors.New("busy") }
+			}
+			if err := removeAllForce(root); err != nil {
+				// The error carries the whole path: keep its end, where
+				// the system error is.
+				msg := err.Error()
+				t.Errorf("removeAllForce: ...%s", msg[max(0, len(msg)-200):])
+			}
+			if _, err := os.Lstat(root); !os.IsNotExist(err) {
+				t.Fatalf("deep tree still there: %v", err)
+			}
+		})
+	}
 }

@@ -1,4 +1,4 @@
-//go:build sandbox
+//go:build sandbox && linux
 
 // Probes of the runsc facts earlier tasks could only take from the
 // documentation (the TODO(task10) lists in runsc.go and phases.go).
