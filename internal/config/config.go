@@ -85,7 +85,7 @@ func (s Sandbox) WithDefaults() Sandbox {
 		v   *int
 		def int
 	}{
-		{&s.FetchTimeoutSeconds, 300}, {&s.BuildTimeoutSeconds, 300},
+		{&s.FetchTimeoutSeconds, 900}, {&s.BuildTimeoutSeconds, 900},
 		{&s.RunTimeoutSeconds, 120}, {&s.MemoryMB, 2048}, {&s.CPUs, 2},
 		{&s.PIDs, 512}, {&s.OutputLimitKB, 1024},
 	} {

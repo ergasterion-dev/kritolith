@@ -81,7 +81,7 @@ func TestSandboxDefaults(t *testing.T) {
 	}
 	want := Sandbox{
 		Runtime: "runsc", Rootfs: "/x", GoProxy: "https://proxy.golang.org",
-		FetchTimeoutSeconds: 300, BuildTimeoutSeconds: 300, RunTimeoutSeconds: 120,
+		FetchTimeoutSeconds: 900, BuildTimeoutSeconds: 900, RunTimeoutSeconds: 120,
 		MemoryMB: 2048, CPUs: 2, PIDs: 512, OutputLimitKB: 1024,
 	}
 	if got := c.Sandbox.WithDefaults(); got != want {

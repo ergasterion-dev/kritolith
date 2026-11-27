@@ -80,8 +80,8 @@ The `sandbox` section of `kritolith.json`. The sandbox is off until `rootfs` is 
 | `rootfs` | (none) | Absolute path of the Go rootfs. Setting it turns the sandbox on. |
 | `runtime` | `runsc` | Runtime binary, looked up on `PATH`. |
 | `goproxy` | `https://proxy.golang.org` | The only module proxy the fetch phase uses. Exactly one URL: no list (`,` `\|`), no `direct`, no `off`, no userinfo, query or fragment. `https://`, or `http://` only to a loopback host. The fetch container reaches it only through the fetch bridge's forwarder, which runs on the host, so a loopback proxy works. |
-| `fetch_timeout_seconds` | 300 | Wall clock for `go mod download`. |
-| `build_timeout_seconds` | 300 | Wall clock for the build. A cold `-race` build compiles the standard library, because each run has its own build cache. |
+| `fetch_timeout_seconds` | 900 | Wall clock for `go mod download`. A large module graph takes several minutes behind the fetch bridge. The forwarder still limits a single upstream request to 10 minutes (600 seconds), which is shorter than this phase limit, so one very slow download fails before the phase does. |
+| `build_timeout_seconds` | 900 | Wall clock for the build. A cold `-race` build compiles the standard library plus the repository under gVisor, because each run has its own build cache, and that takes several minutes. |
 | `run_timeout_seconds` | 120 | Wall clock for running the PoC. Go's own `-test.timeout` is set to 90% of it, so a hang still prints a goroutine dump. |
 | `memory_mb` | 2048 | cgroup memory limit per container. `-race` and `-cover` are memory hungry. |
 | `cpus` | 2 | cgroup CPU quota. The CPU-time rlimit is `timeout × cpus + 10` seconds. |
