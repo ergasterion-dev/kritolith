@@ -121,7 +121,7 @@ What it does not do, or does not do yet:
 - **OOM is not detected.** `runsc`'s exit status does not say why a container was SIGKILLed, so a memory-limit kill is reported as a run with no signal (`INCONCLUSIVE`), not as "out of memory".
 - **runsc's own failures are ambiguous.** `runsc` exits 128 when it fails to start a container, which cannot be told apart from a contained `exit 128`. Both are `INCONCLUSIVE`.
 - **Logs stay local.** Capped phase logs go to `<data_dir>/sandbox-logs/<report id>/` (0600) and are never put in the emailed bundle. The signed verdict carries each log's SHA-256. The logs have no retention limit yet.
-- **Reports through `check --ghsa` and `serve` never reach the sandbox yet.** GitHub's advisory API returns no attachments, and code blocks in the report body are not run.
+- **Reports through `check --ghsa` and `serve` never reach the sandbox yet.** GitHub's advisory API returns no attachments, and code blocks in the report body are not run. `serve` therefore does not start the sandbox at all: it runs no startup sweep and does not take the work dir lock, so `check --poc` and `ingest --eml` can use the sandbox on the same host while `serve` runs. With a `sandbox` section in its config, `serve` prints one line at startup saying so.
 
 ## Fetch egress
 

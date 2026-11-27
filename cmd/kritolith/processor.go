@@ -35,11 +35,30 @@ type processor struct {
 	closeOnce sync.Once
 }
 
+// processorOption changes how newProcessor builds a processor.
+type processorOption func(*processorOptions)
+
+type processorOptions struct {
+	noSandbox bool
+}
+
+// withoutSandbox makes newProcessor leave a configured sandbox alone:
+// no startup sweep, no runner and no work dir lock. It is for a command
+// that never runs a PoC, so that another kritolith process on the host
+// can use the sandbox meanwhile.
+func withoutSandbox() processorOption {
+	return func(o *processorOptions) { o.noSandbox = true }
+}
+
 // newProcessor opens the store under dir and builds the pipeline. With
 // a sandbox section in cfg it also builds the sandbox (see
-// buildSandbox); an unavailable sandbox is reported on stderr and the
-// processor carries on without it.
-func newProcessor(ctx context.Context, cfg *config.Config, dir string, stderr io.Writer) (*processor, error) {
+// buildSandbox), unless withoutSandbox is given; an unavailable sandbox
+// is reported on stderr and the processor carries on without it.
+func newProcessor(ctx context.Context, cfg *config.Config, dir string, stderr io.Writer, opts ...processorOption) (*processor, error) {
+	var o processorOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	st, err := store.Open(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -73,7 +92,7 @@ func newProcessor(ctx context.Context, cfg *config.Config, dir string, stderr io
 	if pr.signer != nil {
 		p = p.WithSigner(pr.signer)
 	}
-	if cfg != nil && cfg.Sandbox.Enabled() {
+	if cfg != nil && cfg.Sandbox.Enabled() && !o.noSandbox {
 		sb, err := buildSandbox(cfg.Sandbox, gs, dir, stderr)
 		if err != nil {
 			st.Close()

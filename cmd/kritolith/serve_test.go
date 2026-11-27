@@ -20,6 +20,7 @@ import (
 
 	"github.com/ergasterion-dev/kritolith/internal/config"
 	"github.com/ergasterion-dev/kritolith/internal/report"
+	"github.com/ergasterion-dev/kritolith/internal/sandbox"
 	"github.com/ergasterion-dev/kritolith/internal/store"
 )
 
@@ -316,6 +317,44 @@ func TestServeStartupErrors(t *testing.T) {
 			code := run(context.Background(), tt.args, &out, &errOut)
 			if code != tt.wantCode || !strings.Contains(errOut.String(), tt.wantErr) {
 				t.Fatalf("code = %d (want %d), stderr = %q (want %q)", code, tt.wantCode, errOut.String(), tt.wantErr)
+			}
+		})
+	}
+}
+
+// serve never runs a PoC (an advisory carries no PoC files), so it must
+// not sweep, build or lock the sandbox: `check --poc` on the same host
+// needs the work dir. With a sandbox section it says so once on stderr.
+func TestServeLeavesTheSandboxAlone(t *testing.T) {
+	stubSandbox(t,
+		func(string, string) error { t.Error("serve ran the sandbox sweep"); return nil },
+		func(config.Sandbox, sandbox.SourceResolver, string, string) (sandboxRunner, error) {
+			t.Error("serve built the sandbox runner")
+			return &fakeSandbox{}, nil
+		})
+	t.Setenv("KRITOLITH_TEST_WEBHOOK_SECRET", testSecret)
+	t.Setenv("KRITOLITH_TEST_GH_TOKEN", "tok")
+	const note = "kritolith: serve does not run PoCs yet; the sandbox is not started and is left for check and ingest\n"
+	tests := []struct {
+		name     string
+		sandbox  string
+		wantNote int
+	}{
+		{"sandbox section", `,"sandbox":{"rootfs":"/srv/rootfs"}`, 1},
+		{"no sandbox section", ``, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConfigFile(t, `{"projects":[{"repo":"a/b"}],"github":{"webhook_secret_env":"KRITOLITH_TEST_WEBHOOK_SECRET","token_env":"KRITOLITH_TEST_GH_TOKEN"}`+tt.sandbox+`}`)
+			var out, errOut bytes.Buffer
+			// The listen address is invalid, so serve gets through its
+			// whole startup and then stops.
+			code := run(context.Background(), []string{"serve", "--listen", "256.0.0.1:1", "--data-dir", filepath.Join(t.TempDir(), "data"), "--config", cfg}, &out, &errOut)
+			if code != 1 || !strings.Contains(errOut.String(), "serve:") {
+				t.Fatalf("code = %d, stderr = %q; want the listen error", code, errOut.String())
+			}
+			if n := strings.Count(errOut.String(), note); n != tt.wantNote {
+				t.Errorf("the note appears %d times, want %d; stderr = %q", n, tt.wantNote, errOut.String())
 			}
 		})
 	}

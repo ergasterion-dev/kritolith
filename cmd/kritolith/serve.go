@@ -74,11 +74,17 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(stderr, err)
 	}
-	pr, err := newProcessor(ctx, &cfg, dir, stderr)
+	// A report fetched from GitHub carries no PoC files, so serve has
+	// nothing to run in the sandbox. Building it would take the work
+	// dir lock and make `check --poc` on this host end INCONCLUSIVE.
+	pr, err := newProcessor(ctx, &cfg, dir, stderr, withoutSandbox())
 	if err != nil {
 		return fail(stderr, err)
 	}
 	defer pr.close()
+	if cfg.Sandbox.Enabled() {
+		fmt.Fprintln(stderr, "kritolith: serve does not run PoCs yet; the sandbox is not started and is left for check and ingest")
+	}
 	if *doNotify {
 		for _, p := range cfg.Projects {
 			if err := pr.canNotify(p.Repo); err != nil {

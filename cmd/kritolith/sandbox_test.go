@@ -56,6 +56,26 @@ func TestNewProcessorSandboxDisabled(t *testing.T) {
 	}
 }
 
+// withoutSandbox leaves a configured sandbox alone: no sweep, no
+// runner (so no work dir lock), nothing on stderr.
+func TestNewProcessorWithoutSandbox(t *testing.T) {
+	stubSandbox(t,
+		func(string, string) error { t.Error("sweep called"); return nil },
+		func(config.Sandbox, sandbox.SourceResolver, string, string) (sandboxRunner, error) {
+			t.Error("constructor called")
+			return &fakeSandbox{}, nil
+		})
+	var errOut bytes.Buffer
+	pr, err := newProcessor(context.Background(), sandboxCfg("/srv/rootfs"), filepath.Join(t.TempDir(), "data"), &errOut, withoutSandbox())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.close()
+	if pr.sandbox != nil || errOut.Len() != 0 {
+		t.Fatalf("sandbox = %v, stderr = %q", pr.sandbox, errOut.String())
+	}
+}
+
 // The real constructor on a host without a usable sandbox (no Linux,
 // or no rootfs at that path): one stderr line, and the command goes on.
 func TestNewProcessorSandboxUnavailableRealHost(t *testing.T) {
